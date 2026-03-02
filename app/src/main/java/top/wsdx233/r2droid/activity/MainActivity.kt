@@ -30,6 +30,7 @@ import top.wsdx233.r2droid.feature.home.HomeScreen
 import top.wsdx233.r2droid.feature.install.InstallScreen
 import top.wsdx233.r2droid.feature.permission.PermissionScreen
 import top.wsdx233.r2droid.feature.settings.SettingsScreen
+import top.wsdx233.r2droid.feature.plugin.PluginManagerScreen
 import top.wsdx233.r2droid.ui.theme.R2droidTheme
 import top.wsdx233.r2droid.util.IntentFileResolver
 import top.wsdx233.r2droid.util.PermissionManager
@@ -138,7 +139,8 @@ enum class AppScreen {
     About,
     Settings,
     Features,
-    R2Frida
+    R2Frida,
+    PluginManager
 }
 
 @Composable
@@ -246,6 +248,7 @@ fun MainAppNavigation(
             top.wsdx233.r2droid.screen.home.FeaturesScreen(
                 onBackClick = { currentScreen = AppScreen.Home },
                 onNavigateToR2Frida = { currentScreen = AppScreen.R2Frida },
+                onNavigateToPlugins = { currentScreen = AppScreen.PluginManager },
                 onCustomStart = { command ->
                     if (R2PipeManager.isConnected) {
                         R2PipeManager.forceClose()
@@ -283,6 +286,14 @@ fun MainAppNavigation(
             }
             ProjectScreen(
                 onNavigateBack = { currentScreen = AppScreen.Home }
+            )
+        }
+        AppScreen.PluginManager -> {
+            BackHandler {
+                currentScreen = AppScreen.Features
+            }
+            PluginManagerScreen(
+                onBackClick = { currentScreen = AppScreen.Features }
             )
         }
     }

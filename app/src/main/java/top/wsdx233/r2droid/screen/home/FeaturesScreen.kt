@@ -61,6 +61,7 @@ import top.wsdx233.r2droid.feature.manual.R2ManualScreen
 fun FeaturesScreen(
     onBackClick: () -> Unit,
     onNavigateToR2Frida: () -> Unit = {},
+    onNavigateToPlugins: () -> Unit = {},
     onCustomStart: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -176,7 +177,7 @@ fun FeaturesScreen(
                 description = stringResource(R.string.feature_plugins_desc),
                 icon = Icons.Default.Extension,
                 iconTint = Color(0xFFAB47BC),
-                onClick = {}
+                onClick = onNavigateToPlugins
             )
         }
     }

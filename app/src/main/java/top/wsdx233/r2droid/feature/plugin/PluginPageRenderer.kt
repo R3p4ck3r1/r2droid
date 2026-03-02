@@ -1,0 +1,606 @@
+package top.wsdx233.r2droid.feature.plugin
+
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import top.wsdx233.r2droid.activity.TerminalActivity
+import top.wsdx233.r2droid.util.R2PipeManager
+import java.io.File
+
+@Composable
+fun PluginPageRenderer(
+    pluginId: String,
+    page: PluginPage,
+    modifier: Modifier = Modifier
+) {
+    when (page.type.lowercase()) {
+        "schema" -> SchemaPluginPage(pluginId = pluginId, path = page.path, modifier = modifier)
+        "terminal" -> TerminalCommandPluginPage(pluginId = pluginId, modifier = modifier)
+        else -> WebViewPluginPage(pluginId = pluginId, path = page.path, modifier = modifier)
+    }
+}
+
+@Composable
+private fun TerminalCommandPluginPage(
+    pluginId: String,
+    modifier: Modifier = Modifier
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val plugin = remember(pluginId) { PluginManager.findInstalledPlugin(pluginId) }
+    val terminal = plugin?.manifest?.entry?.terminal
+
+    if (terminal == null) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Terminal entry not configured", color = MaterialTheme.colorScheme.error)
+        }
+        return
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = terminal.title ?: plugin?.manifest?.name ?: pluginId,
+            style = MaterialTheme.typography.titleLarge
+        )
+        Text(
+            text = terminal.command,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        OutlinedButton(
+            onClick = {
+                val intent = Intent(context, TerminalActivity::class.java)
+                    .putExtra("startup_command", terminal.command)
+                context.startActivity(intent)
+            }
+        ) {
+            Text("Open Advanced Terminal")
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun WebViewPluginPage(
+    pluginId: String,
+    path: String,
+    modifier: Modifier = Modifier
+) {
+    val pageFile = PluginManager.resolvePluginFile(pluginId, path)
+
+    if (pageFile == null) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Plugin page not found: $path", color = MaterialTheme.colorScheme.error)
+        }
+        return
+    }
+
+    val bridge = remember(pluginId) { PluginWebBridge(pluginId) }
+
+    AndroidView(
+        modifier = modifier.fillMaxSize(),
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.allowFileAccess = true
+                settings.allowContentAccess = false
+                webViewClient = WebViewClient()
+                webChromeClient = WebChromeClient()
+                addJavascriptInterface(bridge, "R2PluginHost")
+                loadUrl(pageFile.toURI().toString())
+            }
+        },
+        update = { webView ->
+            if (webView.url.isNullOrBlank()) {
+                webView.loadUrl(pageFile.toURI().toString())
+            }
+        }
+    )
+}
+
+@Composable
+private fun SchemaPluginPage(
+    pluginId: String,
+    path: String,
+    modifier: Modifier = Modifier
+) {
+    val schemaFile = PluginManager.resolvePluginFile(pluginId, path)
+    if (schemaFile == null || !schemaFile.exists()) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Schema not found: $path", color = MaterialTheme.colorScheme.error)
+        }
+        return
+    }
+
+    val schema = remember(schemaFile.absolutePath) {
+        runCatching {
+            Json { ignoreUnknownKeys = true }
+                .decodeFromString(PluginSchemaPage.serializer(), schemaFile.readText())
+        }.getOrNull()
+    }
+
+    if (schema == null) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Schema parse failed", color = MaterialTheme.colorScheme.error)
+        }
+        return
+    }
+
+    var output by remember { mutableStateOf("") }
+
+    val rootModifier = applyScrollModifier(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        scroll = schema.scroll
+    )
+
+    Column(
+        modifier = rootModifier,
+        verticalArrangement = Arrangement.spacedBy(schema.spacing.dp),
+        horizontalAlignment = parseHorizontalAlignment(schema.align)
+    ) {
+        val schemaScriptCode = remember(schemaFile.absolutePath, schema.script) {
+            val scriptRef = schema.script?.trim().orEmpty()
+            if (scriptRef.isBlank()) {
+                null
+            } else {
+                val scriptFile = PluginManager.resolvePluginFile(pluginId, scriptRef)
+                if (scriptFile != null && scriptFile.exists()) {
+                    runCatching { scriptFile.readText() }.getOrNull()
+                } else {
+                    scriptRef
+                }
+            }
+        }
+
+        schema.widgets.forEach { widget ->
+            RenderSchemaWidget(
+                pluginId = pluginId,
+                widget = widget,
+                script = schemaScriptCode,
+                onOutput = { output = it }
+            )
+        }
+
+        if (output.isNotBlank()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = output,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RenderSchemaWidget(
+    pluginId: String,
+    widget: PluginSchemaWidget,
+    script: String?,
+    onOutput: (String) -> Unit
+) {
+    val baseModifier = applyScrollModifier(
+        modifier = applySizeModifier(
+            modifier = Modifier,
+            widthSpec = widget.width,
+            heightSpec = widget.height
+        ),
+        scroll = widget.scroll
+    )
+
+    when (widget.type.lowercase()) {
+        "text" -> {
+            Text(
+                text = widget.text ?: "",
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = baseModifier
+            )
+        }
+
+        "button" -> {
+            val label = widget.text ?: "Run"
+            Button(
+                onClick = {
+                    onOutput(runSchemaAction(pluginId, widget, script))
+                },
+                modifier = baseModifier
+            ) {
+                Text(label)
+            }
+        }
+
+        "row" -> {
+            Row(
+                modifier = baseModifier,
+                horizontalArrangement = Arrangement.spacedBy(widget.spacing.dp),
+                verticalAlignment = parseVerticalAlignment(widget.align)
+            ) {
+                widget.children.forEach { child ->
+                    RenderSchemaWidget(pluginId = pluginId, widget = child, script = script, onOutput = onOutput)
+                }
+            }
+        }
+
+        "box" -> {
+            Box(
+                modifier = baseModifier,
+                contentAlignment = parseContentAlignment(widget.align)
+            ) {
+                widget.children.forEach { child ->
+                    RenderSchemaWidget(pluginId = pluginId, widget = child, script = script, onOutput = onOutput)
+                }
+            }
+        }
+
+        "spacer" -> {
+            val spacerWidth = parseDp(widget.width) ?: 1f
+            val spacerHeight = parseDp(widget.height) ?: 8f
+            Spacer(
+                modifier = Modifier
+                    .width(spacerWidth.dp)
+                    .height(spacerHeight.dp)
+            )
+        }
+
+        else -> {
+            Column(
+                modifier = baseModifier,
+                verticalArrangement = Arrangement.spacedBy(widget.spacing.dp),
+                horizontalAlignment = parseHorizontalAlignment(widget.align)
+            ) {
+                widget.children.forEach { child ->
+                    RenderSchemaWidget(pluginId = pluginId, widget = child, script = script, onOutput = onOutput)
+                }
+            }
+        }
+    }
+}
+
+private fun runSchemaAction(pluginId: String, widget: PluginSchemaWidget, script: String?): String {
+    val action = widget.action?.lowercase() ?: return "Unsupported action"
+    return when (action) {
+        "r2" -> {
+            val cmd = widget.command ?: ""
+            runBlocking { R2PipeManager.execute(cmd).getOrElse { "Error: ${it.message}" } }
+        }
+
+        "script" -> {
+            val code = widget.script ?: ""
+            runBlocking { PluginRuntime.runPluginScript(pluginId, code).getOrElse { "Error: ${it.message}" } }
+        }
+
+        "script.call" -> {
+            val fn = widget.function ?: widget.command ?: ""
+            val scriptCode = widget.script?.takeIf { it.isNotBlank() } ?: script.orEmpty()
+            runBlocking { PluginRuntime.runPluginScriptFunction(pluginId, scriptCode, fn).getOrElse { "Error: ${it.message}" } }
+        }
+
+        "frida" -> {
+            val code = widget.script ?: ""
+            PluginRuntime.runFridaScript(
+                pluginId = pluginId,
+                script = code
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "http", "request" -> {
+            PluginRuntime.requestNetwork(
+                pluginId = pluginId,
+                method = widget.method ?: "GET",
+                url = widget.url ?: widget.command.orEmpty(),
+                body = widget.body.orEmpty(),
+                headersJson = widget.headers.orEmpty()
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "download" -> {
+            PluginRuntime.downloadToPluginData(
+                pluginId = pluginId,
+                url = widget.url ?: "",
+                relativePath = widget.path ?: "download.bin"
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "proc.start" -> {
+            PluginRuntime.processStart(
+                pluginId = pluginId,
+                sessionId = widget.sessionId ?: "default",
+                commandLine = widget.command ?: ""
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "proc.write" -> {
+            PluginRuntime.processWrite(
+                pluginId = pluginId,
+                sessionId = widget.sessionId ?: "default",
+                input = widget.body.orEmpty()
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "proc.read" -> {
+            PluginRuntime.processRead(
+                pluginId = pluginId,
+                sessionId = widget.sessionId ?: "default",
+                timeoutMs = widget.timeoutMs,
+                maxLines = widget.maxLines
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "proc.stop" -> {
+            PluginRuntime.processStop(
+                pluginId = pluginId,
+                sessionId = widget.sessionId ?: "default"
+            ).getOrElse { "Error: ${it.message}" }
+        }
+
+        "proc.alive" -> {
+            PluginRuntime.processAlive(
+                pluginId = pluginId,
+                sessionId = widget.sessionId ?: "default"
+            ).map { it.toString() }.getOrElse { "Error: ${it.message}" }
+        }
+
+        "plugin.dir" -> PluginRuntime.getPluginDir(pluginId).getOrElse { "Error: ${it.message}" }
+        "data.dir" -> PluginRuntime.getPluginDataDir(pluginId).getOrElse { "Error: ${it.message}" }
+        else -> "Unsupported action: $action"
+    }
+}
+
+@Composable
+private fun applyScrollModifier(modifier: Modifier, scroll: String?): Modifier {
+    return when (scroll?.lowercase()) {
+        "vertical" -> modifier.verticalScroll(rememberScrollState())
+        "horizontal" -> modifier.horizontalScroll(rememberScrollState())
+        "both" -> modifier
+            .verticalScroll(rememberScrollState())
+            .horizontalScroll(rememberScrollState())
+        else -> modifier
+    }
+}
+
+private fun applySizeModifier(modifier: Modifier, widthSpec: String?, heightSpec: String?): Modifier {
+    var result = modifier
+    when (widthSpec?.trim()?.lowercase()) {
+        "fill", "fillmaxwidth", "match" -> result = result.fillMaxWidth()
+        else -> {
+            parseDp(widthSpec)?.let { result = result.width(it.dp) }
+        }
+    }
+    when (heightSpec?.trim()?.lowercase()) {
+        "fill", "fillmaxheight", "match" -> result = result.fillMaxHeight()
+        else -> {
+            parseDp(heightSpec)?.let { result = result.height(it.dp) }
+        }
+    }
+    return result
+}
+
+private fun parseDp(spec: String?): Float? {
+    if (spec.isNullOrBlank()) return null
+    return spec.trim().removeSuffix("dp").toFloatOrNull()
+}
+
+private fun parseHorizontalAlignment(value: String?): Alignment.Horizontal {
+    return when (value?.lowercase()) {
+        "center", "center_horizontal" -> Alignment.CenterHorizontally
+        "end", "right" -> Alignment.End
+        else -> Alignment.Start
+    }
+}
+
+private fun parseVerticalAlignment(value: String?): Alignment.Vertical {
+    return when (value?.lowercase()) {
+        "top" -> Alignment.Top
+        "bottom" -> Alignment.Bottom
+        else -> Alignment.CenterVertically
+    }
+}
+
+private fun parseContentAlignment(value: String?): Alignment {
+    return when (value?.lowercase()) {
+        "top", "top_center" -> Alignment.TopCenter
+        "top_end", "top_right" -> Alignment.TopEnd
+        "center", "center_center" -> Alignment.Center
+        "end", "right", "center_end", "center_right" -> Alignment.CenterEnd
+        "bottom_start", "bottom_left" -> Alignment.BottomStart
+        "bottom", "bottom_center" -> Alignment.BottomCenter
+        "bottom_end", "bottom_right" -> Alignment.BottomEnd
+        else -> Alignment.CenterStart
+    }
+}
+
+private class PluginWebBridge(
+    private val pluginId: String
+) {
+    @JavascriptInterface
+    fun r2(command: String): String {
+        return runBlocking {
+            R2PipeManager.execute(command).getOrElse { "Error: ${it.message}" }
+        }
+    }
+
+    @JavascriptInterface
+    fun readText(path: String): String {
+        val file = PluginManager.resolvePluginFile(pluginId, path) ?: return ""
+        return runCatching { file.readText() }.getOrDefault("")
+    }
+
+    @JavascriptInterface
+    fun writeData(path: String, content: String): String {
+        val file = PluginManager.resolvePluginDataFile(pluginId, path, mustExist = false)
+            ?: return "invalid path"
+        return runCatching {
+            file.parentFile?.mkdirs()
+            file.writeText(content)
+            "ok"
+        }.getOrElse { "error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun runScript(code: String): String {
+        return runBlocking {
+            PluginRuntime.runPluginScript(pluginId, code)
+                .getOrElse { "Error: ${it.message}" }
+        }
+    }
+
+    @JavascriptInterface
+    fun pluginDir(): String {
+        return PluginRuntime.getPluginDir(pluginId).getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun dataDir(): String {
+        return PluginRuntime.getPluginDataDir(pluginId).getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun httpGet(url: String): String {
+        return PluginRuntime.requestNetwork(pluginId, "GET", url)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun httpRequest(method: String, url: String, body: String, headersJson: String): String {
+        return PluginRuntime.requestNetwork(pluginId, method, url, body, headersJson)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun download(url: String, relativePath: String): String {
+        return PluginRuntime.downloadToPluginData(pluginId, url, relativePath)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun procStart(sessionId: String, commandLine: String): String {
+        return PluginRuntime.processStart(pluginId, sessionId, commandLine)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun procWrite(sessionId: String, input: String): String {
+        return PluginRuntime.processWrite(pluginId, sessionId, input)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun procRead(sessionId: String, timeoutMs: Long, maxLines: Int): String {
+        return PluginRuntime.processRead(pluginId, sessionId, timeoutMs, maxLines)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun procStop(sessionId: String): String {
+        return PluginRuntime.processStop(pluginId, sessionId)
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun procAlive(sessionId: String): String {
+        return PluginRuntime.processAlive(pluginId, sessionId)
+            .map { it.toString() }
+            .getOrElse { "Error: ${it.message}" }
+    }
+
+    @JavascriptInterface
+    fun frida(script: String): String {
+        return PluginRuntime.runFridaScript(pluginId, script)
+            .getOrElse { "Error: ${it.message}" }
+    }
+}
+
+@Serializable
+data class PluginSchemaPage(
+    @SerialName("widgets") val widgets: List<PluginSchemaWidget> = emptyList(),
+    @SerialName("script") val script: String? = null,
+    @SerialName("scroll") val scroll: String? = "vertical",
+    @SerialName("spacing") val spacing: Float = 12f,
+    @SerialName("align") val align: String? = null
+)
+
+@Serializable
+data class PluginSchemaWidget(
+    @SerialName("type") val type: String,
+    @SerialName("text") val text: String? = null,
+    @SerialName("action") val action: String? = null,
+    @SerialName("command") val command: String? = null,
+    @SerialName("script") val script: String? = null,
+    @SerialName("children") val children: List<PluginSchemaWidget> = emptyList(),
+    @SerialName("width") val width: String? = null,
+    @SerialName("height") val height: String? = null,
+    @SerialName("align") val align: String? = null,
+    @SerialName("scroll") val scroll: String? = null,
+    @SerialName("spacing") val spacing: Float = 8f,
+    @SerialName("url") val url: String? = null,
+    @SerialName("body") val body: String? = null,
+    @SerialName("headers") val headers: String? = null,
+    @SerialName("path") val path: String? = null,
+    @SerialName("method") val method: String? = null,
+    @SerialName("sessionId") val sessionId: String? = null,
+    @SerialName("timeoutMs") val timeoutMs: Long = 30L,
+    @SerialName("maxLines") val maxLines: Int = 200,
+    @SerialName("function") val function: String? = null
+)

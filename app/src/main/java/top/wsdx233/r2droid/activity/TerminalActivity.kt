@@ -127,6 +127,8 @@ class TerminalActivity : ComponentActivity() {
         val newPath = "$customBin:$systemPath"
         envs.add("PATH=$newPath")
 
+        val startupCommand = intent.getStringExtra("startup_command")?.trim().orEmpty()
+
         val session = TerminalSession(
             "/system/bin/sh",
             workDir,
@@ -184,6 +186,11 @@ class TerminalActivity : ComponentActivity() {
 
         this.terminalSession = session
         terminalView.attachSession(session)
+
+        if (startupCommand.isNotBlank()) {
+            session.write(startupCommand)
+            session.write("\n")
+        }
 
         // 启动时尝试获取焦点，方便物理键盘直接输入
         terminalView.requestFocus()

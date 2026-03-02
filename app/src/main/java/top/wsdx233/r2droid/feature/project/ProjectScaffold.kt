@@ -114,6 +114,10 @@ import top.wsdx233.r2droid.feature.r2frida.R2FridaViewModel
 import top.wsdx233.r2droid.feature.r2frida.data.*
 import top.wsdx233.r2droid.feature.r2frida.ui.*
 import top.wsdx233.r2droid.feature.terminal.ui.CommandScreen
+import top.wsdx233.r2droid.feature.plugin.PluginManager
+import top.wsdx233.r2droid.feature.plugin.PluginPage
+import top.wsdx233.r2droid.feature.plugin.PluginPageRenderer
+import top.wsdx233.r2droid.feature.plugin.PluginScreenTabDescriptor
 import top.wsdx233.r2droid.util.R2PipeManager
 
 enum class MainCategory(@StringRes val titleRes: Int, val icon: ImageVector) {
@@ -233,20 +237,77 @@ fun ProjectScaffold(
         viewModel.currentDetailTab = selectedDetailTabIndex
     }
 
-    val listTabs = listOf(
+    val baseListTabs = listOf(
         R.string.proj_tab_overview, R.string.proj_tab_search, R.string.proj_tab_sections, R.string.proj_tab_symbols,
         R.string.proj_tab_imports, R.string.proj_tab_relocs, R.string.proj_tab_strings, R.string.proj_tab_functions
     )
-    val detailTabs = listOf(R.string.proj_tab_hex, R.string.proj_tab_disassembly, R.string.proj_tab_decompile, R.string.proj_tab_graph)
-    val projectTabs = listOf(R.string.proj_tab_settings, R.string.proj_tab_cmd, R.string.proj_tab_logs)
-    val aiTabs = listOf(R.string.ai_tab_chat, R.string.ai_tab_settings, R.string.ai_tab_prompts)
-    val r2fridaTabs = listOf(
+    val pluginListTabs by rememberPluginTabsForTarget("list")
+    val listTabTitles = buildList {
+        addAll(baseListTabs.map { stringResource(it) })
+        addAll(pluginListTabs.map { it.tab.title })
+    }
+    androidx.compose.runtime.LaunchedEffect(listTabTitles.size) {
+        if (selectedListTabIndex >= listTabTitles.size) {
+            selectedListTabIndex = 0
+        }
+    }
+
+    val baseDetailTabs = listOf(R.string.proj_tab_hex, R.string.proj_tab_disassembly, R.string.proj_tab_decompile, R.string.proj_tab_graph)
+    val pluginDetailTabs by rememberPluginTabsForTarget("detail")
+    val detailTabs = buildList {
+        addAll(baseDetailTabs)
+        addAll(pluginDetailTabs.map { -1 })
+    }
+    val baseProjectTabs = listOf(R.string.proj_tab_settings, R.string.proj_tab_cmd, R.string.proj_tab_logs)
+    val pluginProjectTabs by PluginManager.projectTabs.collectAsState()
+    val projectTabs = buildList {
+        addAll(baseProjectTabs.map { stringResource(it) })
+        addAll(pluginProjectTabs.map { it.tab.title })
+    }
+    androidx.compose.runtime.LaunchedEffect(projectTabs.size) {
+        if (selectedProjectTabIndex >= projectTabs.size) {
+            selectedProjectTabIndex = 0
+        }
+    }
+    val detailTabTitles = buildList {
+        addAll(baseDetailTabs.map { stringResource(it) })
+        addAll(pluginDetailTabs.map { it.tab.title })
+    }
+    androidx.compose.runtime.LaunchedEffect(detailTabTitles.size) {
+        if (selectedDetailTabIndex >= detailTabTitles.size) {
+            selectedDetailTabIndex = 0
+        }
+    }
+
+    val baseAiTabs = listOf(R.string.ai_tab_chat, R.string.ai_tab_settings, R.string.ai_tab_prompts)
+    val pluginAiTabs by rememberPluginTabsForTarget("ai")
+    val aiTabTitles = buildList {
+        addAll(baseAiTabs.map { stringResource(it) })
+        addAll(pluginAiTabs.map { it.tab.title })
+    }
+    androidx.compose.runtime.LaunchedEffect(aiTabTitles.size) {
+        if (selectedAiTabIndex >= aiTabTitles.size) {
+            selectedAiTabIndex = 0
+        }
+    }
+
+    val baseR2fridaTabs = listOf(
         R.string.r2frida_tab_overview, R.string.r2frida_tab_libraries, R.string.r2frida_tab_mappings,
         R.string.r2frida_tab_scripts,
         R.string.r2frida_tab_entries, R.string.r2frida_tab_exports, R.string.r2frida_tab_strings,
         R.string.r2frida_tab_symbols, R.string.r2frida_tab_sections,
         R.string.r2frida_tab_functions, R.string.r2frida_tab_search, R.string.r2frida_tab_monitor
     )
+    val pluginR2fridaTabs by rememberPluginTabsForTarget("r2frida")
+    val r2fridaTabTitles = buildList {
+        addAll(baseR2fridaTabs.map { stringResource(it) })
+        addAll(pluginR2fridaTabs.map { it.tab.title })
+    }
+    androidx.compose.runtime.LaunchedEffect(r2fridaTabTitles.size) {
+        if (selectedR2FridaTabIndex >= r2fridaTabTitles.size) {
+            selectedR2FridaTabIndex = 0
+        }
+    }
 
     val quickJumpToDetail: ((Long) -> Unit)? = when (SettingsManager.defaultJumpTarget) {
         "hex", "disasm" -> { addr: Long ->
@@ -705,11 +766,15 @@ fun ProjectScaffold(
                     onAiTabSelected = { selectedAiTabIndex = it },
                     selectedR2FridaTabIndex = selectedR2FridaTabIndex,
                     onR2FridaTabSelected = { selectedR2FridaTabIndex = it },
-                    listTabs = listTabs,
+                    listTabs = baseListTabs,
+                    listTabTitles = listTabTitles,
                     detailTabs = detailTabs,
                     projectTabs = projectTabs,
-                    aiTabs = aiTabs,
-                    r2fridaTabs = r2fridaTabs,
+                    detailTabTitles = detailTabTitles,
+                    aiTabs = baseAiTabs,
+                    aiTabTitles = aiTabTitles,
+                    r2fridaTabs = baseR2fridaTabs,
+                    r2fridaTabTitles = r2fridaTabTitles,
                     isR2Frida = isR2Frida,
                     onSwipeUpCommand = { showCommandSheet = true }
                 )
@@ -751,11 +816,15 @@ fun ProjectScaffold(
                         onAiTabSelected = { selectedAiTabIndex = it },
                         selectedR2FridaTabIndex = selectedR2FridaTabIndex,
                         onR2FridaTabSelected = { selectedR2FridaTabIndex = it },
-                        listTabs = listTabs,
+                        listTabs = baseListTabs,
+                        listTabTitles = listTabTitles,
                         detailTabs = detailTabs,
                         projectTabs = projectTabs,
-                        aiTabs = aiTabs,
-                        r2fridaTabs = r2fridaTabs
+                        detailTabTitles = detailTabTitles,
+                        aiTabs = baseAiTabs,
+                        aiTabTitles = aiTabTitles,
+                        r2fridaTabs = baseR2fridaTabs,
+                        r2fridaTabTitles = r2fridaTabTitles
                     )
                 }
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -792,51 +861,105 @@ fun ProjectScaffold(
                 is ProjectUiState.Success -> {
                     when (selectedCategory) {
                         MainCategory.List -> {
-                            ProjectListView(
-                                tabIndex = selectedListTabIndex,
-                                overviewScrollState = listOverviewScrollState,
-                                searchResultListState = listSearchResultState,
-                                sectionsListState = listSectionsState,
-                                symbolsListState = listSymbolsState,
-                                importsListState = listImportsState,
-                                relocationsListState = listRelocationsState,
-                                stringsListState = listStringsState,
-                                functionsListState = listFunctionsState,
-                                onNavigateToDetail = { addr, tabIdx ->
-                                    markVisited(addr)
-                                    selectedCategory = MainCategory.Detail
-                                    selectedDetailTabIndex = tabIdx
-                                    viewModel.currentDetailTab = tabIdx
-                                    viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
-                                },
-                                onQuickNavigateToDetail = quickJumpToDetail,
-                                onMarkVisited = markVisited,
-                                isVisited = isVisited
-                            )
+                            if (selectedListTabIndex < baseListTabs.size) {
+                                ProjectListView(
+                                    tabIndex = selectedListTabIndex,
+                                    overviewScrollState = listOverviewScrollState,
+                                    searchResultListState = listSearchResultState,
+                                    sectionsListState = listSectionsState,
+                                    symbolsListState = listSymbolsState,
+                                    importsListState = listImportsState,
+                                    relocationsListState = listRelocationsState,
+                                    stringsListState = listStringsState,
+                                    functionsListState = listFunctionsState,
+                                    onNavigateToDetail = { addr, tabIdx ->
+                                        markVisited(addr)
+                                        selectedCategory = MainCategory.Detail
+                                        selectedDetailTabIndex = tabIdx
+                                        viewModel.currentDetailTab = tabIdx
+                                        viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
+                                    },
+                                    onQuickNavigateToDetail = quickJumpToDetail,
+                                    onMarkVisited = markVisited,
+                                    isVisited = isVisited
+                                )
+                            } else {
+                                val pluginTab = pluginListTabs.getOrNull(selectedListTabIndex - baseListTabs.size)
+                                RenderPluginInjectedTab(
+                                    pluginTab = pluginTab,
+                                    isR2Frida = isR2Frida,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
                         MainCategory.Detail -> {
-                            ProjectDetailView(
-                                tabIndex = selectedDetailTabIndex
-                            )
+                            if (selectedDetailTabIndex < baseDetailTabs.size) {
+                                ProjectDetailView(
+                                    tabIndex = selectedDetailTabIndex
+                                )
+                            } else {
+                                val pluginTab = pluginDetailTabs.getOrNull(selectedDetailTabIndex - baseDetailTabs.size)
+                                RenderPluginInjectedTab(
+                                    pluginTab = pluginTab,
+                                    isR2Frida = isR2Frida,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
                         MainCategory.Project -> {
                             val logs by viewModel.logs.collectAsState()
-                            when (selectedProjectTabIndex) {
-                                0 -> ProjectSettingsScreen(viewModel, r2fridaViewModel)
-                                1 -> CommandScreen(
+                            when {
+                                selectedProjectTabIndex == 0 -> ProjectSettingsScreen(viewModel, r2fridaViewModel)
+                                selectedProjectTabIndex == 1 -> CommandScreen(
                                     command = cmdInput,
                                     onCommandChange = { cmdInput = it },
                                     commandHistory = cmdHistory,
                                     onCommandHistoryChange = { cmdHistory = it }
                                 )
-                                2 -> LogList(logs, onClearLogs = { viewModel.onEvent(ProjectEvent.ClearLogs) })
+                                selectedProjectTabIndex == 2 -> LogList(logs, onClearLogs = { viewModel.onEvent(ProjectEvent.ClearLogs) })
+                                else -> {
+                                    val pluginTab = pluginProjectTabs.getOrNull(selectedProjectTabIndex - baseProjectTabs.size)
+                                    if (pluginTab == null) {
+                                        Text(
+                                            text = "Plugin tab unavailable",
+                                            modifier = Modifier.padding(16.dp),
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    } else {
+                                        val visible = when (pluginTab.tab.visibleWhen.lowercase()) {
+                                            "r2frida", "frida" -> isR2Frida
+                                            else -> true
+                                        }
+                                        if (visible) {
+                                            PluginPageRenderer(
+                                                pluginId = pluginTab.pluginId,
+                                                page = pluginTab.tab.page,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "This tab is only available in r2frida session",
+                                                modifier = Modifier.padding(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                         MainCategory.AI -> {
-                            when (selectedAiTabIndex) {
-                                0 -> AiChatScreen(aiViewModel)
-                                1 -> AiProviderSettingsScreen(aiViewModel)
-                                2 -> AiPromptsScreen()
+                            if (selectedAiTabIndex < baseAiTabs.size) {
+                                when (selectedAiTabIndex) {
+                                    0 -> AiChatScreen(aiViewModel)
+                                    1 -> AiProviderSettingsScreen(aiViewModel)
+                                    2 -> AiPromptsScreen()
+                                }
+                            } else {
+                                val pluginTab = pluginAiTabs.getOrNull(selectedAiTabIndex - baseAiTabs.size)
+                                RenderPluginInjectedTab(
+                                    pluginTab = pluginTab,
+                                    isR2Frida = isR2Frida,
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
                         }
                         MainCategory.R2Frida -> {
@@ -929,113 +1052,122 @@ fun ProjectScaffold(
                                 }
                             }
 
-                            when (selectedR2FridaTabIndex) {
-                                0 -> FridaOverviewScreen(fridaOverview)
-                                1 -> FridaLibraryList(fridaLibraries, fridaActions,
-                                    cursorAddress = (uiState as? ProjectUiState.Success)?.cursorAddress ?: 0L,
-                                    onSeek = { addr ->
-                                        viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
-                                        r2fridaViewModel.clearNonLibraryCache()
-                                    },
-                                    onRefresh = { r2fridaViewModel.loadLibraries(true) },
-                                    searchQuery = fridaLibrariesQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateLibrariesSearchQuery,
-                                    listState = fridaLibrariesListState)
-                                2 -> FridaMappingList(fridaMappings, fridaActions,
-                                    cursorAddress = (uiState as? ProjectUiState.Success)?.cursorAddress ?: 0L,
-                                    onSeek = { addr ->
-                                        viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
-                                    },
-                                    onRefresh = { r2fridaViewModel.loadMappings(true) },
-                                    searchQuery = fridaMappingsQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateMappingsSearchQuery,
-                                    listState = fridaMappingsListState)
-                                3 -> FridaScriptScreen(
-                                    logs = fridaScriptLogs,
-                                    running = fridaScriptRunning,
-                                    scriptContent = fridaScriptContent,
-                                    currentScriptName = fridaCurrentScriptName,
-                                    scriptFiles = fridaScriptFiles,
-                                    onRun = { r2fridaViewModel.runScript(it) },
-                                    onContentChange = { r2fridaViewModel.updateScriptContent(it) },
-                                    onNewScript = { r2fridaViewModel.newScript() },
-                                    onSaveScript = { name, content -> r2fridaViewModel.saveScript(name, content) },
-                                    onOpenScript = { r2fridaViewModel.openScript(it) },
-                                    onDeleteScript = { r2fridaViewModel.deleteScript(it) },
-                                    onRefreshFiles = { r2fridaViewModel.refreshScriptFiles() }
-                                )
-                                4 -> FridaEntryList(fridaEntries, fridaActions,
-                                    onRefresh = { r2fridaViewModel.loadEntries(true) },
-                                    searchQuery = fridaEntriesQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateEntriesSearchQuery,
-                                    listState = fridaEntriesListState)
-                                5 -> FridaExportList(fridaExports, fridaActions,
-                                    onRefresh = { r2fridaViewModel.loadExports(true) },
-                                    searchHint = stringResource(R.string.r2frida_search_exports),
-                                    searchQuery = fridaExportsQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateExportsSearchQuery,
-                                    listState = fridaExportsListState,
-                                    showAutoDemangleToggle = true,
-                                    autoDemangleEnabled = fridaAutoDemangleExports,
-                                    onAutoDemangleChange = r2fridaViewModel::setAutoDemangleExports)
-                                6 -> FridaStringList(fridaStrings, fridaActions,
-                                    onRefresh = { r2fridaViewModel.loadStrings(true) },
-                                    searchQuery = fridaStringsQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateStringsSearchQuery,
-                                    listState = fridaStringsListState)
-                                7 -> FridaExportList(fridaSymbols, fridaActions,
-                                    onRefresh = { r2fridaViewModel.loadSymbols(true) },
-                                    searchHint = stringResource(R.string.r2frida_search_symbols),
-                                    searchQuery = fridaSymbolsQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateSymbolsSearchQuery,
-                                    listState = fridaSymbolsListState)
-                                8 -> FridaExportList(fridaSections, fridaActions,
-                                    onRefresh = { r2fridaViewModel.loadSections(true) },
-                                    searchHint = stringResource(R.string.r2frida_search_sections),
-                                    searchQuery = fridaSectionsQuery,
-                                    onSearchQueryChange = r2fridaViewModel::updateSectionsSearchQuery,
-                                    listState = fridaSectionsListState)
-                                9 -> FridaCustomFunctionsScreen(fridaCustomFunctions, fridaActions,
-                                    onRefresh = { r2fridaViewModel.loadCustomFunctions(true) },
-                                    searchQuery = fridaCustomFunctionsQuery,
-                                    onSearchChange = r2fridaViewModel::updateCustomFunctionsSearchQuery,
-                                    listState = fridaCustomFunctionsListState,
-                                    autoDemangleEnabled = fridaAutoDemangleCustomFunctions,
-                                    onAutoDemangleChange = r2fridaViewModel::setAutoDemangleCustomFunctions)
-                                10 -> FridaSearchScreen(
-                                    results = fridaSearchResults,
-                                    isSearching = fridaIsSearching,
-                                    searchValueType = fridaSearchValueType,
-                                    searchCompare = fridaSearchCompare,
-                                    selectedRegions = fridaSelectedRegions,
-                                    frozenAddresses = fridaFrozenAddresses,
-                                    searchError = fridaSearchError,
-                                    onSearch = { input, rMin, rMax -> r2fridaViewModel.performSearch(input, rMin, rMax) },
-                                    onRefine = { mode, target, rMin, rMax, expr -> r2fridaViewModel.refineSearch(mode, target, rMin, rMax, expr) },
-                                    onClear = { r2fridaViewModel.clearSearchResults() },
-                                    onWriteValue = { addr, v -> r2fridaViewModel.writeValue(addr, v) },
-                                    onBatchWrite = { v -> r2fridaViewModel.batchWriteAll(v) },
-                                    onToggleFreeze = { addr, v -> r2fridaViewModel.toggleFreeze(addr, v) },
-                                    onValueTypeChange = { r2fridaViewModel.updateSearchValueType(it) },
-                                    onCompareChange = { r2fridaViewModel.updateSearchCompare(it) },
-                                    onRegionsChange = { r2fridaViewModel.updateSelectedRegions(it) },
-                                    onClearError = { r2fridaViewModel.clearSearchError() },
-                                    onRefreshValues = { r2fridaViewModel.refreshSearchValues() },
-                                    maxResults = fridaMaxResults,
-                                    onMaxResultsChange = { r2fridaViewModel.updateMaxResults(it) },
-                                    actions = fridaActions
-                                )
-                                11 -> FridaMonitorScreen(
-                                    monitors = fridaMonitors,
-                                    onAddMonitor = { addr, size -> r2fridaViewModel.addMonitor(addr, size) },
-                                    onRemoveMonitor = { r2fridaViewModel.removeMonitor(it) },
-                                    onStartMonitor = { r2fridaViewModel.startMonitor(it) },
-                                    onStopMonitor = { r2fridaViewModel.stopMonitor(it) },
-                                    onFilterChange = { id, f -> r2fridaViewModel.updateMonitorFilter(id, f) },
-                                    onClearEvents = { r2fridaViewModel.clearMonitorEvents(it) },
-                                    actions = fridaActions,
-                                    prefillAddress = fridaMonitorPrefill,
-                                    onPrefillConsumed = { r2fridaViewModel.consumeMonitorPrefillAddress() }
+                            if (selectedR2FridaTabIndex < baseR2fridaTabs.size) {
+                                when (selectedR2FridaTabIndex) {
+                                    0 -> FridaOverviewScreen(fridaOverview)
+                                    1 -> FridaLibraryList(fridaLibraries, fridaActions,
+                                        cursorAddress = (uiState as? ProjectUiState.Success)?.cursorAddress ?: 0L,
+                                        onSeek = { addr ->
+                                            viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
+                                            r2fridaViewModel.clearNonLibraryCache()
+                                        },
+                                        onRefresh = { r2fridaViewModel.loadLibraries(true) },
+                                        searchQuery = fridaLibrariesQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateLibrariesSearchQuery,
+                                        listState = fridaLibrariesListState)
+                                    2 -> FridaMappingList(fridaMappings, fridaActions,
+                                        cursorAddress = (uiState as? ProjectUiState.Success)?.cursorAddress ?: 0L,
+                                        onSeek = { addr ->
+                                            viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
+                                        },
+                                        onRefresh = { r2fridaViewModel.loadMappings(true) },
+                                        searchQuery = fridaMappingsQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateMappingsSearchQuery,
+                                        listState = fridaMappingsListState)
+                                    3 -> FridaScriptScreen(
+                                        logs = fridaScriptLogs,
+                                        running = fridaScriptRunning,
+                                        scriptContent = fridaScriptContent,
+                                        currentScriptName = fridaCurrentScriptName,
+                                        scriptFiles = fridaScriptFiles,
+                                        onRun = { r2fridaViewModel.runScript(it) },
+                                        onContentChange = { r2fridaViewModel.updateScriptContent(it) },
+                                        onNewScript = { r2fridaViewModel.newScript() },
+                                        onSaveScript = { name, content -> r2fridaViewModel.saveScript(name, content) },
+                                        onOpenScript = { r2fridaViewModel.openScript(it) },
+                                        onDeleteScript = { r2fridaViewModel.deleteScript(it) },
+                                        onRefreshFiles = { r2fridaViewModel.refreshScriptFiles() }
+                                    )
+                                    4 -> FridaEntryList(fridaEntries, fridaActions,
+                                        onRefresh = { r2fridaViewModel.loadEntries(true) },
+                                        searchQuery = fridaEntriesQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateEntriesSearchQuery,
+                                        listState = fridaEntriesListState)
+                                    5 -> FridaExportList(fridaExports, fridaActions,
+                                        onRefresh = { r2fridaViewModel.loadExports(true) },
+                                        searchHint = stringResource(R.string.r2frida_search_exports),
+                                        searchQuery = fridaExportsQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateExportsSearchQuery,
+                                        listState = fridaExportsListState,
+                                        showAutoDemangleToggle = true,
+                                        autoDemangleEnabled = fridaAutoDemangleExports,
+                                        onAutoDemangleChange = r2fridaViewModel::setAutoDemangleExports)
+                                    6 -> FridaStringList(fridaStrings, fridaActions,
+                                        onRefresh = { r2fridaViewModel.loadStrings(true) },
+                                        searchQuery = fridaStringsQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateStringsSearchQuery,
+                                        listState = fridaStringsListState)
+                                    7 -> FridaExportList(fridaSymbols, fridaActions,
+                                        onRefresh = { r2fridaViewModel.loadSymbols(true) },
+                                        searchHint = stringResource(R.string.r2frida_search_symbols),
+                                        searchQuery = fridaSymbolsQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateSymbolsSearchQuery,
+                                        listState = fridaSymbolsListState)
+                                    8 -> FridaExportList(fridaSections, fridaActions,
+                                        onRefresh = { r2fridaViewModel.loadSections(true) },
+                                        searchHint = stringResource(R.string.r2frida_search_sections),
+                                        searchQuery = fridaSectionsQuery,
+                                        onSearchQueryChange = r2fridaViewModel::updateSectionsSearchQuery,
+                                        listState = fridaSectionsListState)
+                                    9 -> FridaCustomFunctionsScreen(fridaCustomFunctions, fridaActions,
+                                        onRefresh = { r2fridaViewModel.loadCustomFunctions(true) },
+                                        searchQuery = fridaCustomFunctionsQuery,
+                                        onSearchChange = r2fridaViewModel::updateCustomFunctionsSearchQuery,
+                                        listState = fridaCustomFunctionsListState,
+                                        autoDemangleEnabled = fridaAutoDemangleCustomFunctions,
+                                        onAutoDemangleChange = r2fridaViewModel::setAutoDemangleCustomFunctions)
+                                    10 -> FridaSearchScreen(
+                                        results = fridaSearchResults,
+                                        isSearching = fridaIsSearching,
+                                        searchValueType = fridaSearchValueType,
+                                        searchCompare = fridaSearchCompare,
+                                        selectedRegions = fridaSelectedRegions,
+                                        frozenAddresses = fridaFrozenAddresses,
+                                        searchError = fridaSearchError,
+                                        onSearch = { input, rMin, rMax -> r2fridaViewModel.performSearch(input, rMin, rMax) },
+                                        onRefine = { mode, target, rMin, rMax, expr -> r2fridaViewModel.refineSearch(mode, target, rMin, rMax, expr) },
+                                        onClear = { r2fridaViewModel.clearSearchResults() },
+                                        onWriteValue = { addr, v -> r2fridaViewModel.writeValue(addr, v) },
+                                        onBatchWrite = { v -> r2fridaViewModel.batchWriteAll(v) },
+                                        onToggleFreeze = { addr, v -> r2fridaViewModel.toggleFreeze(addr, v) },
+                                        onValueTypeChange = { r2fridaViewModel.updateSearchValueType(it) },
+                                        onCompareChange = { r2fridaViewModel.updateSearchCompare(it) },
+                                        onRegionsChange = { r2fridaViewModel.updateSelectedRegions(it) },
+                                        onClearError = { r2fridaViewModel.clearSearchError() },
+                                        onRefreshValues = { r2fridaViewModel.refreshSearchValues() },
+                                        maxResults = fridaMaxResults,
+                                        onMaxResultsChange = { r2fridaViewModel.updateMaxResults(it) },
+                                        actions = fridaActions
+                                    )
+                                    11 -> FridaMonitorScreen(
+                                        monitors = fridaMonitors,
+                                        onAddMonitor = { addr, size -> r2fridaViewModel.addMonitor(addr, size) },
+                                        onRemoveMonitor = { r2fridaViewModel.removeMonitor(it) },
+                                        onStartMonitor = { r2fridaViewModel.startMonitor(it) },
+                                        onStopMonitor = { r2fridaViewModel.stopMonitor(it) },
+                                        onFilterChange = { id, f -> r2fridaViewModel.updateMonitorFilter(id, f) },
+                                        onClearEvents = { r2fridaViewModel.clearMonitorEvents(it) },
+                                        actions = fridaActions,
+                                        prefillAddress = fridaMonitorPrefill,
+                                        onPrefillConsumed = { r2fridaViewModel.consumeMonitorPrefillAddress() }
+                                    )
+                                }
+                            } else {
+                                val pluginTab = pluginR2fridaTabs.getOrNull(selectedR2FridaTabIndex - baseR2fridaTabs.size)
+                                RenderPluginInjectedTab(
+                                    pluginTab = pluginTab,
+                                    isR2Frida = isR2Frida,
+                                    modifier = Modifier.fillMaxSize()
                                 )
                             }
                         }
@@ -1102,6 +1234,50 @@ fun ProjectScaffold(
 }
 
 @Composable
+private fun rememberPluginTabsForTarget(target: String): androidx.compose.runtime.State<List<PluginScreenTabDescriptor>> {
+    val screenTabs by PluginManager.screenTabs.collectAsState()
+    return remember(screenTabs, target) {
+        androidx.compose.runtime.derivedStateOf {
+            screenTabs.filter { it.target.equals(target, ignoreCase = true) }
+        }
+    }
+}
+
+@Composable
+private fun RenderPluginInjectedTab(
+    pluginTab: PluginScreenTabDescriptor?,
+    isR2Frida: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (pluginTab == null) {
+        Text(
+            text = "Plugin tab unavailable",
+            modifier = modifier.padding(16.dp),
+            color = MaterialTheme.colorScheme.error
+        )
+        return
+    }
+
+    val visible = when (pluginTab.tab.visibleWhen.lowercase()) {
+        "r2frida", "frida" -> isR2Frida
+        else -> true
+    }
+
+    if (visible) {
+        PluginPageRenderer(
+            pluginId = pluginTab.pluginId,
+            page = pluginTab.tab.page,
+            modifier = modifier
+        )
+    } else {
+        Text(
+            text = "This tab is only available in r2frida session",
+            modifier = modifier.padding(16.dp)
+        )
+    }
+}
+
+@Composable
 private fun ProjectSubTabs(
     selectedCategory: MainCategory,
     selectedListTabIndex: Int,
@@ -1115,10 +1291,14 @@ private fun ProjectSubTabs(
     selectedR2FridaTabIndex: Int,
     onR2FridaTabSelected: (Int) -> Unit,
     listTabs: List<Int>,
+    listTabTitles: List<String>,
     detailTabs: List<Int>,
-    projectTabs: List<Int>,
+    projectTabs: List<String>,
+    detailTabTitles: List<String>,
     aiTabs: List<Int>,
-    r2fridaTabs: List<Int>
+    aiTabTitles: List<String>,
+    r2fridaTabs: List<Int>,
+    r2fridaTabTitles: List<String>
 ) {
     val indicator = @Composable { tabPositions: List<TabPosition>, idx: Int ->
         TabRowDefaults.SecondaryIndicator(
@@ -1133,7 +1313,7 @@ private fun ProjectSubTabs(
             contentColor = MaterialTheme.colorScheme.primary,
             indicator = { indicator(it, selectedListTabIndex) }
         ) {
-            listTabs.forEachIndexed { i, t -> Tab(selectedListTabIndex == i, { onListTabSelected(i) }, text = { Text(stringResource(t)) }) }
+            listTabTitles.forEachIndexed { i, t -> Tab(selectedListTabIndex == i, { onListTabSelected(i) }, text = { Text(t) }) }
         }
         MainCategory.Detail -> ScrollableTabRow(
             selectedTabIndex = selectedDetailTabIndex, edgePadding = 0.dp,
@@ -1141,7 +1321,9 @@ private fun ProjectSubTabs(
             contentColor = MaterialTheme.colorScheme.primary,
             indicator = { indicator(it, selectedDetailTabIndex) }
         ) {
-            detailTabs.forEachIndexed { i, t -> Tab(selectedDetailTabIndex == i, { onDetailTabSelected(i) }, text = { Text(stringResource(t)) }) }
+            detailTabTitles.forEachIndexed { i, t ->
+                Tab(selectedDetailTabIndex == i, { onDetailTabSelected(i) }, text = { Text(t) })
+            }
         }
         MainCategory.Project -> TabRow(
             selectedTabIndex = selectedProjectTabIndex,
@@ -1149,7 +1331,7 @@ private fun ProjectSubTabs(
             contentColor = MaterialTheme.colorScheme.primary,
             indicator = { indicator(it, selectedProjectTabIndex) }
         ) {
-            projectTabs.forEachIndexed { i, t -> Tab(selectedProjectTabIndex == i, { onProjectTabSelected(i) }, text = { Text(stringResource(t)) }) }
+            projectTabs.forEachIndexed { i, t -> Tab(selectedProjectTabIndex == i, { onProjectTabSelected(i) }, text = { Text(t) }) }
         }
         MainCategory.AI -> TabRow(
             selectedTabIndex = selectedAiTabIndex,
@@ -1157,7 +1339,7 @@ private fun ProjectSubTabs(
             contentColor = MaterialTheme.colorScheme.primary,
             indicator = { indicator(it, selectedAiTabIndex) }
         ) {
-            aiTabs.forEachIndexed { i, t -> Tab(selectedAiTabIndex == i, { onAiTabSelected(i) }, text = { Text(stringResource(t)) }) }
+            aiTabTitles.forEachIndexed { i, t -> Tab(selectedAiTabIndex == i, { onAiTabSelected(i) }, text = { Text(t) }) }
         }
         MainCategory.R2Frida -> ScrollableTabRow(
             selectedTabIndex = selectedR2FridaTabIndex, edgePadding = 0.dp,
@@ -1165,7 +1347,7 @@ private fun ProjectSubTabs(
             contentColor = MaterialTheme.colorScheme.primary,
             indicator = { indicator(it, selectedR2FridaTabIndex) }
         ) {
-            r2fridaTabs.forEachIndexed { i, t -> Tab(selectedR2FridaTabIndex == i, { onR2FridaTabSelected(i) }, text = { Text(stringResource(t)) }) }
+            r2fridaTabTitles.forEachIndexed { i, t -> Tab(selectedR2FridaTabIndex == i, { onR2FridaTabSelected(i) }, text = { Text(t) }) }
         }
     }
 }
@@ -1265,10 +1447,14 @@ private fun ProjectBottomBar(
     selectedR2FridaTabIndex: Int,
     onR2FridaTabSelected: (Int) -> Unit,
     listTabs: List<Int>,
+    listTabTitles: List<String>,
     detailTabs: List<Int>,
-    projectTabs: List<Int>,
+    projectTabs: List<String>,
+    detailTabTitles: List<String>,
     aiTabs: List<Int>,
+    aiTabTitles: List<String>,
     r2fridaTabs: List<Int>,
+    r2fridaTabTitles: List<String>,
     isR2Frida: Boolean,
     onSwipeUpCommand: () -> Unit
 ) {
@@ -1290,10 +1476,14 @@ private fun ProjectBottomBar(
                 selectedR2FridaTabIndex = selectedR2FridaTabIndex,
                 onR2FridaTabSelected = onR2FridaTabSelected,
                 listTabs = listTabs,
+                listTabTitles = listTabTitles,
                 detailTabs = detailTabs,
                 projectTabs = projectTabs,
+                detailTabTitles = detailTabTitles,
                 aiTabs = aiTabs,
-                r2fridaTabs = r2fridaTabs
+                aiTabTitles = aiTabTitles,
+                r2fridaTabs = r2fridaTabs,
+                r2fridaTabTitles = r2fridaTabTitles
             )
             NavigationBar(
                 modifier = Modifier.pointerInput(Unit) {

@@ -23,3 +23,4 @@ app/release/*
 .kotlin
 .roo
 .vscode
+app\src\main\assets\plugins\*
