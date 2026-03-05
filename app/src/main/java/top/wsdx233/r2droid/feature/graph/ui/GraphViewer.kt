@@ -42,7 +42,7 @@ private const val NODE_TITLE_HEIGHT = 32f
 private const val INSTR_LINE_HEIGHT = 22f
 private const val NODE_MIN_WIDTH = 200f
 private const val NODE_CORNER_RADIUS = 6f
-private const val LAYER_GAP_Y = 72f  // 增加层间距，防止水平线拥挤重叠
+private const val LAYER_GAP_Y = 72f
 private const val NODE_GAP_X = 24f
 private const val CHAR_WIDTH_APPROX = 8f
 private const val ARROW_SIZE = 10f
@@ -97,6 +97,156 @@ class TrackAllocator(private val base: Float, private val direction: Float = 1f)
         return pos
     }
 }
+
+// ================= 修改点：绝对防穿模的严谨路由算法 =================
+private fun routeEdgesStrictly(
+    data: GraphData,
+    nodes: List<LayoutNode>,
+    nodeMap: Map<Int, LayoutNode>,
+    backEdges: Set<Pair<Int, Int>>
+): List<RoutedEdge> {
+    val routedEdges = mutableListOf<RoutedEdge>()
+    if (nodes.isEmpty()) return emptyList()
+
+    val layerTops = mutableMapOf<Int, Float>()
+    val layerBottoms = mutableMapOf<Int, Float>()
+    val maxLayer = nodes.maxOf { it.layer }
+
+    nodes.groupBy { it.layer }.forEach { (l, lst) ->
+        layerTops[l] = lst.minOf { it.y }
+        layerBottoms[l] = lst.maxOf { it.bottomY }
+    }
+
+    // ★ 核心修复：安全间隙分配器
+    // 它能保证分配的 Y 坐标绝对只存在于层与层的“空隙”中，物理上断绝了水平横穿节点的可能
+    class SafeGapAllocator(val top: Float, val bottom: Float) {
+        private var count = 0
+        fun allocate(): Float {
+            val space = max(0f, bottom - top)
+            if (space < 2f) return top
+            // 根据实际空隙大小，计算最多能容纳多少条平行线
+            val maxTracks = max(1, (space / TRACK_SPACING).toInt())
+            // 将线条组居中放置在空隙里
+            val unusedSpace = space - (maxTracks * TRACK_SPACING)
+            val startOffset = unusedSpace / 2f
+
+            val offset = startOffset + (count % maxTracks) * TRACK_SPACING
+            count++
+            return top + offset
+        }
+    }
+
+    val gapAllocators = mutableMapOf<Int, SafeGapAllocator>()
+    // 为每一层之间的空隙创建安全分配器
+    for (l in 0..maxLayer) {
+        val top = if (l > 0) layerBottoms[l - 1]!! + 4f else layerTops[l]!! - 40f
+        val bottom = layerTops[l]!! - 4f
+        gapAllocators[l] = SafeGapAllocator(top, bottom)
+    }
+    // 最底下一层下方的空隙
+    gapAllocators[maxLayer + 1] = SafeGapAllocator(layerBottoms[maxLayer]!! + 4f, layerBottoms[maxLayer]!! + 40f)
+
+    // 独立的外侧轨道，用于长距离绕行
+    val leftOuterTracks = TrackAllocator(0f, -1f)
+    val rightOuterTracks = TrackAllocator(0f, 1f)
+
+    data class EdgeTask(val src: LayoutNode, val tgt: LayoutNode, val isJump: Boolean, val isFail: Boolean, val isBack: Boolean)
+    val tasks = mutableListOf<EdgeTask>()
+
+    for (node in data.nodes) {
+        val srcNode = nodeMap[node.id] ?: continue
+        val lastInstr = node.instructions.lastOrNull()
+        val hasBranch = lastInstr?.jump != null && lastInstr.fail != null
+
+        for (tgtId in node.outNodes) {
+            val tgtNode = nodeMap[tgtId] ?: continue
+            val isBack = (node.id to tgtId) in backEdges || tgtNode.layer <= srcNode.layer
+
+            var isJump = false
+            var isFail = false
+            if (hasBranch) {
+                if (tgtNode.node.address == lastInstr?.jump) isJump = true
+                else if (tgtNode.node.address == lastInstr?.fail) isFail = true
+            }
+            tasks.add(EdgeTask(srcNode, tgtNode, isJump, isFail, isBack))
+        }
+    }
+
+    val targetEntryCount = mutableMapOf<Int, Int>()
+
+    for (task in tasks) {
+        val src = task.src
+        val tgt = task.tgt
+        val pts = mutableListOf<Offset>()
+
+        val color = when {
+            task.isJump -> edgeTrueColor
+            task.isFail -> edgeFalseColor
+            else -> edgeColor
+        }
+
+        // 分配出口 X (IDA 风格)
+        val exitOffset = if (task.isJump) -24f else if (task.isFail) 24f else 0f
+        val startX = src.centerX + exitOffset
+        val startY = src.bottomY
+
+        // 分配入口 X，防止箭头重叠
+        val entryIdx = targetEntryCount.getOrDefault(tgt.node.id, 0)
+        targetEntryCount[tgt.node.id] = entryIdx + 1
+        val entryOffset = if (entryIdx == 0) 0f else {
+            val mult = (entryIdx + 1) / 2
+            val sign = if (entryIdx % 2 != 0) -1f else 1f
+            sign * mult * 12f
+        }
+        val endX = tgt.centerX + entryOffset
+        val endY = tgt.y
+
+        pts.add(Offset(startX, startY))
+
+        // ★ 核心逻辑判定：
+        // 只有紧贴着下一层的正向边，才允许走内部直线。其他（跨多层、往回跳）全部走到外部去
+        val isAdjacentForward = (tgt.layer == src.layer + 1) && !task.isBack
+
+        if (isAdjacentForward) {
+            // == 1. 相邻层正向边：直接在两层之间的空隙走 Z 字形 ==
+            val midY = gapAllocators[tgt.layer]!!.allocate()
+
+            pts.add(Offset(startX, midY))
+            if (abs(startX - endX) > 2f) {
+                pts.add(Offset(endX, midY))
+            }
+            pts.add(Offset(endX, endY))
+        } else {
+            // == 2. 跨层长线 / 回边：走到外部绕行，避开中间的所有节点 ==
+            val minLayer = minOf(src.layer, tgt.layer)
+            val maxLayer = maxOf(src.layer, tgt.layer)
+            val nodesInPath = nodes.filter { it.layer in minLayer..maxLayer }
+
+            // 计算中间障碍物的边界
+            val pathLeft = nodesInPath.minOf { it.x } - TRACK_SPACING * 2
+            val pathRight = nodesInPath.maxOf { it.x + it.width } + TRACK_SPACING * 2
+
+            val isLeftBound = src.centerX < (pathLeft + pathRight) / 2
+            val sideX = if (isLeftBound) pathLeft + leftOuterTracks.allocate() else pathRight + rightOuterTracks.allocate()
+
+            // 离开的横线放在源节点下方空隙
+            val exitY = gapAllocators[src.layer + 1]!!.allocate()
+            // 进来的横线放在目标节点上方空隙
+            val entryY = gapAllocators[tgt.layer]!!.allocate()
+
+            pts.add(Offset(startX, exitY))      // 下来到空隙
+            pts.add(Offset(sideX, exitY))       // 横向开出包围圈
+            pts.add(Offset(sideX, entryY))      // 在安全的外围垂直狂奔
+            pts.add(Offset(endX, entryY))       // 在目标上方空隙横向钻回来
+            pts.add(Offset(endX, endY))         // 垂直插入目标
+        }
+
+        routedEdges.add(RoutedEdge(pts, color))
+    }
+
+    return routedEdges
+}
+
 
 private fun displayInstrCount(node: GraphNode): Int {
     val total = node.instructions.size
@@ -186,50 +336,64 @@ fun layoutGraph(data: GraphData): GraphLayoutResult {
         nodeH[id] = nodeHeight(node)
     }
 
+    // ====== 修改点 1：使用居中引力与对称排斥来计算 X 坐标 ======
     val nodeX = mutableMapOf<Int, Float>()
     val nodeY = mutableMapOf<Int, Float>()
     var currentY = 0f
 
+    // 先计算 Y 坐标，初始化 X 坐标
     for (l in 0..maxLayer) {
         val ids = layerNodes[l]
-        var currentX = 0f
         val maxH = ids.maxOfOrNull { nodeH[it]!! } ?: NODE_TITLE_HEIGHT
-        
         for (id in ids) {
-            nodeX[id] = currentX
             nodeY[id] = currentY
-            currentX += nodeW[id]!! + NODE_GAP_X
+            nodeX[id] = 0f // 暂时全部放中间
         }
-        
-        val totalWidth = currentX - NODE_GAP_X
-        val shift = -totalWidth / 2f
-        for (id in ids) {
-            nodeX[id] = nodeX[id]!! + shift
-        }
-        
         currentY += maxH + LAYER_GAP_Y
     }
 
-    for (l in 1..maxLayer) {
-        for (id in layerNodes[l]) {
-            val preds = dagPred[id].orEmpty()
-            if (preds.size == 1) {
-                val p = preds.first()
-                val targetCenter = nodeX[p]!! + nodeW[p]!! / 2f
-                val desiredX = targetCenter - nodeW[id]!! / 2f
-                nodeX[id] = desiredX
+    // 自上而下：根据父节点位置计算理想的 X 坐标
+    for (l in 0..maxLayer) {
+        val ids = layerNodes[l]
+        if (l > 0) {
+            for (id in ids) {
+                val preds = dagPred[id].orEmpty()
+                if (preds.isNotEmpty()) {
+                    // 核心：子节点的理想位置是所有父节点中心点的平均值
+                    val avgCenter = preds.map { nodeX[it]!! + nodeW[it]!! / 2f }.average().toFloat()
+                    nodeX[id] = avgCenter - nodeW[id]!! / 2f
+                }
             }
         }
-        val sorted = layerNodes[l].sortedBy { nodeX[it]!! }
-        for (i in 1 until sorted.size) {
-            val prev = sorted[i - 1]
-            val curr = sorted[i]
-            val minX = nodeX[prev]!! + nodeW[prev]!! + NODE_GAP_X
-            if (nodeX[curr]!! < minX) {
-                nodeX[curr] = minX
+
+        // 解决当前层的节点重叠（使用对称向两边推开的方式，而不是单向往右推）
+        val sorted = ids.sortedBy { nodeX[it]!! }.toMutableList()
+        var hasOverlap = true
+        var iterations = 0
+        while (hasOverlap && iterations < 50) { // 限制迭代次数防死循环
+            hasOverlap = false
+            for (i in 1 until sorted.size) {
+                val leftId = sorted[i - 1]
+                val rightId = sorted[i]
+                val minDistance = (nodeW[leftId]!! + nodeW[rightId]!!) / 2f + NODE_GAP_X
+                val leftCenter = nodeX[leftId]!! + nodeW[leftId]!! / 2f
+                val rightCenter = nodeX[rightId]!! + nodeW[rightId]!! / 2f
+                val currentDistance = rightCenter - leftCenter
+
+                if (currentDistance < minDistance) {
+                    hasOverlap = true
+                    // 将重叠的部分平均分摊给两边（向左推一半，向右推一半），保持重心稳定！
+                    val pushOut = (minDistance - currentDistance) / 2f
+                    nodeX[leftId] = nodeX[leftId]!! - pushOut
+                    nodeX[rightId] = nodeX[rightId]!! + pushOut
+                }
             }
+            // 按照推开后的新坐标重新排序
+            sorted.sortBy { nodeX[it]!! }
+            iterations++
         }
     }
+    // =========================================================
 
     val layoutNodesList = allIds.map { id ->
         LayoutNode(nodeById[id]!!, nodeX[id]!!, nodeY[id]!!, nodeW[id]!!, nodeH[id]!!, layer[id]!!)
@@ -240,133 +404,6 @@ fun layoutGraph(data: GraphData): GraphLayoutResult {
     return GraphLayoutResult(layoutNodesList, edges)
 }
 
-// ================= 全新重写的路由算法，彻底解决穿模和箭头重叠 =================
-private fun routeEdgesStrictly(
-    data: GraphData,
-    nodes: List<LayoutNode>,
-    nodeMap: Map<Int, LayoutNode>,
-    backEdges: Set<Pair<Int, Int>>
-): List<RoutedEdge> {
-    val routedEdges = mutableListOf<RoutedEdge>()
-    if (nodes.isEmpty()) return emptyList()
-
-    val graphLeft = nodes.minOf { it.x } - TRACK_SPACING * 3
-    val graphRight = nodes.maxOf { it.x + it.width } + TRACK_SPACING * 3
-
-    // 1. 获取每层的物理边界 (Y坐标)
-    val layerTops = mutableMapOf<Int, Float>()
-    val layerBottoms = mutableMapOf<Int, Float>()
-    nodes.groupBy { it.layer }.forEach { (l, lst) ->
-        layerTops[l] = lst.minOf { it.y }
-        layerBottoms[l] = lst.maxOf { it.bottomY }
-    }
-
-    // 2. 准备各类轨道分配器
-    val hExitAllocators = mutableMapOf<Int, TrackAllocator>()
-    val hEntryAllocators = mutableMapOf<Int, TrackAllocator>()
-    
-    // 出口轨道：在层的最底部往下排 (Direction = 1f)
-    layerBottoms.forEach { (l, bottom) -> 
-        hExitAllocators[l] = TrackAllocator(bottom + 12f, 1f) 
-    }
-    // 入口轨道：在层的最顶部往上排 (Direction = -1f)，确保线在节点上方
-    layerTops.forEach { (l, top) -> 
-        hEntryAllocators[l] = TrackAllocator(top - 16f, -1f) 
-    }
-
-    val leftOuterTracks = TrackAllocator(graphLeft, -1f)
-    val rightOuterTracks = TrackAllocator(graphRight, 1f)
-
-    data class EdgeTask(val src: LayoutNode, val tgt: LayoutNode, val isJump: Boolean, val isFail: Boolean, val isBack: Boolean)
-    val tasks = mutableListOf<EdgeTask>()
-
-    for (node in data.nodes) {
-        val srcNode = nodeMap[node.id] ?: continue
-        val lastInstr = node.instructions.lastOrNull()
-        val hasBranch = lastInstr?.jump != null && lastInstr.fail != null
-        
-        for (tgtId in node.outNodes) {
-            val tgtNode = nodeMap[tgtId] ?: continue
-            val isBack = (node.id to tgtId) in backEdges || tgtNode.layer <= srcNode.layer
-            
-            var isJump = false
-            var isFail = false
-            if (hasBranch) {
-                if (tgtNode.node.address == lastInstr?.jump) isJump = true
-                else if (tgtNode.node.address == lastInstr?.fail) isFail = true
-            }
-            tasks.add(EdgeTask(srcNode, tgtNode, isJump, isFail, isBack))
-        }
-    }
-
-    // 记录进入目标节点的线的数量，用于分配 X 轴偏移量（防止箭头重叠）
-    val targetEntryCount = mutableMapOf<Int, Int>()
-
-    for (task in tasks) {
-        val src = task.src
-        val tgt = task.tgt
-        val pts = mutableListOf<Offset>()
-        
-        val color = when {
-            task.isJump -> edgeTrueColor
-            task.isFail -> edgeFalseColor
-            else -> edgeColor
-        }
-
-        // --- 起点 X 轴分配 (底部) ---
-        // Jump 偏左出，Fail 偏右出，无条件居中
-        val exitOffset = if (task.isJump) -12f else if (task.isFail) 12f else 0f
-        val startX = src.centerX + exitOffset
-        val startY = src.bottomY
-
-        // --- 终点 X 轴分配 (顶部) ---
-        // 动态分配偏移量，顺序: 0, -10, +10, -20, +20... 完美防止箭头糊在一起
-        val entryIdx = targetEntryCount.getOrDefault(tgt.node.id, 0)
-        targetEntryCount[tgt.node.id] = entryIdx + 1
-        val entryOffset = if (entryIdx == 0) 0f else {
-            val mult = (entryIdx + 1) / 2
-            val sign = if (entryIdx % 2 != 0) -1f else 1f
-            sign * mult * 10f
-        }
-        val endX = tgt.centerX + entryOffset
-        val endY = tgt.y
-
-        pts.add(Offset(startX, startY))
-
-        // --- 核心路由计算 ---
-        if (task.isBack || tgt.layer - src.layer > 1) {
-            // 需要绕到外围的情况（回边循环 / 跨越过层的长线）
-            val isLeftBound = src.centerX < (graphLeft + graphRight) / 2
-            val sideX = if (isLeftBound) leftOuterTracks.allocate() else rightOuterTracks.allocate()
-            
-            // 出口轨道向下，入口轨道向上，绝对不会和节点交叉
-            val exitY = hExitAllocators[src.layer]!!.allocate()
-            val entryY = hEntryAllocators[tgt.layer]!!.allocate()
-
-            pts.add(Offset(startX, exitY)) // 下拉出节点
-            pts.add(Offset(sideX, exitY))  // 走向外围
-            pts.add(Offset(sideX, entryY)) // 在外围长途跋涉到目标上方
-            pts.add(Offset(endX, entryY))  // 走到目标正上方
-            
-        } else {
-            // 相邻层直接相连的情况
-            if (abs(startX - endX) > 2f) {
-                // 不在一条垂直线上，需要走个 Z 字型
-                val midY = hExitAllocators[src.layer]!!.allocate()
-                pts.add(Offset(startX, midY))
-                pts.add(Offset(endX, midY))
-            }
-            // 如果在一条垂直线上，什么都不加，直接一根线到底
-        }
-
-        // 无论何种情况，最后一步绝对是垂直向下进入节点顶部！
-        pts.add(Offset(endX, endY))
-        
-        routedEdges.add(RoutedEdge(pts, color))
-    }
-
-    return routedEdges
-}
 
 
 // ================= Compose UI 渲染层 =================
