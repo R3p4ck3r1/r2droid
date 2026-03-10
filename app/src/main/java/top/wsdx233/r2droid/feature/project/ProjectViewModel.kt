@@ -60,11 +60,13 @@ sealed interface ProjectEvent {
     object StartRestoreSession : ProjectEvent
     object StartCustomCommandSession : ProjectEvent
     data class StartAnalysisSession(val cmd: String, val writable: Boolean, val flags: String) : ProjectEvent
+    object ReconnectCurrentSession : ProjectEvent
     object ClearLogs : ProjectEvent
     data class ExecuteCommand(val cmd: String, val callback: (String) -> Unit) : ProjectEvent
     data class SaveProject(val name: String, val analysisLevel: String = "") : ProjectEvent
     data class UpdateProject(val projectId: String) : ProjectEvent
     object ResetSaveState : ProjectEvent
+    object ResetReconnectState : ProjectEvent
     object ClearFunctionsCache : ProjectEvent
 }
 
@@ -101,6 +103,13 @@ sealed class SaveProjectState {
     object Saving : SaveProjectState()
     data class Success(val message: String) : SaveProjectState()
     data class Error(val message: String) : SaveProjectState()
+}
+
+sealed class ReconnectState {
+    object Idle : ReconnectState()
+    object Reconnecting : ReconnectState()
+    data class Success(val message: String) : ReconnectState()
+    data class Error(val message: String) : ReconnectState()
 }
 
 /**
@@ -175,6 +184,9 @@ class ProjectViewModel @Inject constructor(
     // Save project state
     private val _saveProjectState = MutableStateFlow<SaveProjectState>(SaveProjectState.Idle)
     val saveProjectState: StateFlow<SaveProjectState> = _saveProjectState.asStateFlow()
+
+    private val _reconnectState = MutableStateFlow<ReconnectState>(ReconnectState.Idle)
+    val reconnectState: StateFlow<ReconnectState> = _reconnectState.asStateFlow()
     
     // === Strings Paging ===
     private val _stringsSearchQuery = MutableStateFlow("")
@@ -335,6 +347,7 @@ class ProjectViewModel @Inject constructor(
             is ProjectEvent.StartRestoreSession -> startRestoreSession()
             is ProjectEvent.StartCustomCommandSession -> startCustomCommandSession()
             is ProjectEvent.StartAnalysisSession -> startAnalysisSession(event.cmd, event.writable, event.flags)
+            is ProjectEvent.ReconnectCurrentSession -> reconnectCurrentSession()
             is ProjectEvent.JumpToAddress -> jumpToAddress(event.address)
             is ProjectEvent.UpdateCursor -> updateCursor(event.address)
             is ProjectEvent.NavigateBack -> navigateBack()
@@ -355,6 +368,7 @@ class ProjectViewModel @Inject constructor(
             is ProjectEvent.SaveProject -> saveProject(event.name, event.analysisLevel)
             is ProjectEvent.UpdateProject -> updateProject(event.projectId)
             is ProjectEvent.ResetSaveState -> resetSaveState()
+            is ProjectEvent.ResetReconnectState -> resetReconnectState()
             is ProjectEvent.ClearFunctionsCache -> clearFunctionsCache()
         }
     }
@@ -650,6 +664,141 @@ class ProjectViewModel @Inject constructor(
                  }
              }
          }
+    }
+
+    fun reconnectCurrentSession() {
+        val launchConfig = R2PipeManager.activeSessionLaunchConfig
+        if (launchConfig == null) {
+            _reconnectState.value = ReconnectState.Error(context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_no_session))
+            return
+        }
+        if (launchConfig.filePath.isNullOrBlank() && launchConfig.rawArgs.isNullOrBlank()) {
+            _reconnectState.value = ReconnectState.Error(context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_no_target))
+            return
+        }
+
+        viewModelScope.launch {
+            _reconnectState.value = ReconnectState.Reconnecting
+
+            val previousState = _uiState.value as? ProjectUiState.Success
+            val previousProjectId = R2PipeManager.currentProjectId
+            val previousDirty = R2PipeManager.isDirtyAfterSave
+            currentOffset = previousState?.cursorAddress ?: currentOffset
+
+            val reconnectSnapshot = if (
+                !R2PipeManager.isR2FridaSession &&
+                R2PipeManager.isConnected &&
+                R2PipeManager.state.value !is R2PipeManager.State.Executing
+            ) {
+                runCatching {
+                    val snapshotDir = java.io.File(context.cacheDir, "r2-reconnect").apply { mkdirs() }
+                    java.io.File(snapshotDir, "session-${System.currentTimeMillis()}.r2").also { file ->
+                        R2PipeManager.execute("PS ${file.absolutePath}").getOrThrow()
+                    }
+                }.getOrNull()
+            } else {
+                null
+            }
+
+            val savedProject = previousProjectId?.let { savedProjectRepository.getProjectById(it) }
+
+            val reconnectResult = R2PipeManager.replaceActiveSession(
+                context = context,
+                filePath = launchConfig.filePath,
+                flags = launchConfig.flags,
+                rawArgs = launchConfig.rawArgs
+            )
+
+            if (reconnectResult.isFailure) {
+                runCatching { reconnectSnapshot?.delete() }
+                _reconnectState.value = ReconnectState.Error(
+                    reconnectResult.exceptionOrNull()?.message
+                        ?: context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_failed)
+                )
+                return@launch
+            }
+
+            var reconnectMessage = context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_success_reopened)
+            var restoredProjectId: String? = null
+            var restoredDirty = false
+
+            val liveRestoreResult = reconnectSnapshot?.let { file ->
+                R2PipeManager.execute(". ${file.absolutePath}")
+            }
+
+            when {
+                liveRestoreResult?.isSuccess == true -> {
+                    restoredProjectId = previousProjectId
+                    restoredDirty = previousDirty
+                    reconnectMessage = context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_success_restored)
+                }
+                savedProject != null -> {
+                    val savedRestoreResult = R2PipeManager.execute(". ${savedProject.scriptPath}")
+                    if (savedRestoreResult.isSuccess) {
+                        restoredProjectId = savedProject.id
+                        reconnectMessage = context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_success_saved_project)
+                    } else {
+                        reconnectMessage = context.getString(
+                            top.wsdx233.r2droid.R.string.proj_reconnect_success_restore_warning,
+                            savedRestoreResult.exceptionOrNull()?.message
+                                ?: context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_restore_unknown_error)
+                        )
+                    }
+                }
+                previousProjectId != null -> {
+                    reconnectMessage = context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_missing_saved_project)
+                }
+                liveRestoreResult?.isFailure == true -> {
+                    reconnectMessage = context.getString(
+                        top.wsdx233.r2droid.R.string.proj_reconnect_success_restore_warning,
+                        liveRestoreResult.exceptionOrNull()?.message
+                            ?: context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_restore_unknown_error)
+                    )
+                }
+            }
+
+            runCatching { reconnectSnapshot?.delete() }
+
+            R2PipeManager.currentProjectId = restoredProjectId
+            R2PipeManager.isDirtyAfterSave = restoredDirty
+
+            if (R2PipeManager.isR2FridaSession) {
+                _uiState.value = ProjectUiState.Success(
+                    binInfo = null,
+                    cursorAddress = currentOffset
+                )
+            } else {
+                val overviewResult = repository.getOverview()
+                if (overviewResult.isFailure) {
+                    val message = overviewResult.exceptionOrNull()?.message
+                        ?: context.getString(top.wsdx233.r2droid.R.string.proj_reconnect_failed)
+                    _uiState.value = ProjectUiState.Error(message)
+                    _reconnectState.value = ReconnectState.Error(message)
+                    return@launch
+                }
+
+                _uiState.value = ProjectUiState.Success(
+                    binInfo = overviewResult.getOrNull(),
+                    cursorAddress = currentOffset
+                )
+
+                loadSections(forceRefresh = true)
+                if (previousState?.symbols != null) loadSymbols(forceRefresh = true)
+                if (previousState?.imports != null) loadImports(forceRefresh = true)
+                if (previousState?.relocations != null) loadRelocations(forceRefresh = true)
+                if (previousState?.strings != null) loadStrings(forceRefresh = true)
+                if (previousState?.functions != null) loadFunctions(forceRefresh = true)
+                if (previousState?.graphData != null) loadGraph(previousState.graphType)
+            }
+
+            _globalDataInvalidated.value = System.currentTimeMillis()
+            if (previousState?.decompilation != null) {
+                loadDecompilation()
+            }
+            requestScrollToSelection()
+
+            _reconnectState.value = ReconnectState.Success(reconnectMessage)
+        }
     }
 
     private fun loadOverview() {
@@ -1022,6 +1171,10 @@ class ProjectViewModel @Inject constructor(
      */
     fun resetSaveState() {
         _saveProjectState.value = SaveProjectState.Idle
+    }
+
+    fun resetReconnectState() {
+        _reconnectState.value = ReconnectState.Idle
     }
 
     override fun onCleared() {

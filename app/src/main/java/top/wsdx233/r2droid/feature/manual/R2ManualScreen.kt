@@ -4,16 +4,22 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -21,6 +27,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -43,7 +50,11 @@ import top.wsdx233.r2droid.util.R2HelpEntry
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun R2ManualScreen(onBack: () -> Unit) {
+fun R2ManualScreen(
+    onBack: () -> Unit,
+    reconnecting: Boolean = false,
+    onReconnect: (() -> Unit)? = null
+) {
     val context = LocalContext.current
     remember { R2CommandHelp.load(context); true }
 
@@ -67,6 +78,47 @@ fun R2ManualScreen(onBack: () -> Unit) {
                     }
                 }
             )
+        },
+        bottomBar = {
+            if (onReconnect != null) {
+                Surface(tonalElevation = 4.dp) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.proj_reconnect_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = onReconnect,
+                            enabled = !reconnecting,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (reconnecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null
+                                )
+                            }
+                            Spacer(modifier = Modifier.size(8.dp))
+                            Text(
+                                text = stringResource(
+                                    if (reconnecting) R.string.proj_reconnecting_action else R.string.proj_reconnect_action
+                                )
+                            )
+                        }
+                    }
+                }
+            }
         }
     ) { padding ->
         Column(

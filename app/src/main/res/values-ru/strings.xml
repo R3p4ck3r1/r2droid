@@ -333,6 +333,20 @@
     <string name="proj_session_connected">Подключено</string>
     <string name="proj_session_disconnected">Отключено</string>
     <string name="proj_session_saved">Сохранено</string>
+    <string name="proj_reconnect_title">Переподключить backend</string>
+    <string name="proj_reconnect_desc">Перезапустить новый backend r2 и заменить текущий, не закрывая проект</string>
+    <string name="proj_reconnect_action">Переподключить</string>
+    <string name="proj_reconnecting_action">Переподключение...</string>
+    <string name="proj_reconnect_success">Backend успешно переподключен</string>
+    <string name="proj_reconnect_success_restored">Backend переподключен и восстановлен из снимка текущей сессии</string>
+    <string name="proj_reconnect_success_saved_project">Backend переподключен и восстановлен из сохранённого снимка проекта</string>
+    <string name="proj_reconnect_success_reopened">Backend переподключен с командой запуска по умолчанию</string>
+    <string name="proj_reconnect_success_restore_warning">Backend переподключен, но восстановить данные сессии не удалось: %1$s</string>
+    <string name="proj_reconnect_missing_saved_project">Backend переподключен, но сохранённый снимок проекта не найден. Выполнено открытие с командой по умолчанию.</string>
+    <string name="proj_reconnect_no_session">Нет активной сессии для переподключения</string>
+    <string name="proj_reconnect_no_target">Нет цели запуска для переподключения</string>
+    <string name="proj_reconnect_failed">Не удалось переподключить backend</string>
+    <string name="proj_reconnect_restore_unknown_error">Неизвестная ошибка восстановления</string>
 
     <!-- Debug Screen -->
     <string name="debug_command_label">Команда r2</string>

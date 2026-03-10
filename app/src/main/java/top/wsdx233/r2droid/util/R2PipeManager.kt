@@ -34,12 +34,20 @@ object R2PipeManager {
         val subtitle: String = ""
     )
 
+    data class SessionLaunchConfig(
+        val filePath: String?,
+        val flags: String,
+        val rawArgs: String?
+    )
+
     data class R2Session(
         val sessionId: String,
         val r2pipe: R2pipe?,
         val r2pipeHttp: R2pipeHttp?,
         val isHttpMode: Boolean,
+        val httpPort: Int? = null,
         val projectPath: String?,
+        val launchFlags: String,
         val customCommand: String?,
         val projectInfo: SessionProjectInfo,
         val isFridaSession: Boolean,
@@ -106,6 +114,15 @@ object R2PipeManager {
     // 标记当前会话是否为 r2frida 会话
     val isR2FridaSession: Boolean
         get() = activeSession()?.isFridaSession == true
+
+    val activeSessionLaunchConfig: SessionLaunchConfig?
+        get() = activeSession()?.let { session ->
+            SessionLaunchConfig(
+                filePath = session.projectPath,
+                flags = session.launchFlags,
+                rawArgs = session.customCommand
+            )
+        }
 
     /**
      * 状态封装类
@@ -174,6 +191,66 @@ object R2PipeManager {
         }
     }
 
+    private fun buildSession(
+        context: Context,
+        sid: String = UUID.randomUUID().toString(),
+        filePath: String? = null,
+        flags: String = "",
+        rawArgs: String? = null,
+        currentProjectId: String? = pendingProjectId,
+        isDirtyAfterSave: Boolean = false,
+        httpPort: Int = SettingsManager.httpPort
+    ): R2Session {
+        val isFrida = rawArgs?.contains("frida://") == true
+        val useHttp = SettingsManager.useHttpMode && !isFrida
+        val resolvedHttpPort = if (useHttp) httpPort else null
+        val appCtx = context.applicationContext
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+        val http = if (useHttp) {
+            R2pipeHttp(
+                appCtx,
+                filePath = filePath,
+                flags = flags,
+                rawArgs = rawArgs,
+                port = resolvedHttpPort ?: SettingsManager.httpPort
+            )
+        } else null
+        val stdio = if (!useHttp) {
+            R2pipe(appCtx, filePath = filePath, flags = flags, rawArgs = rawArgs)
+        } else null
+
+        val session = R2Session(
+            sessionId = sid,
+            r2pipe = stdio,
+            r2pipeHttp = http,
+            isHttpMode = useHttp,
+            httpPort = resolvedHttpPort,
+            projectPath = filePath,
+            launchFlags = flags,
+            customCommand = rawArgs,
+            projectInfo = buildProjectInfo(filePath, rawArgs),
+            isFridaSession = isFrida,
+            jobScope = scope,
+            currentProjectId = currentProjectId,
+            isDirtyAfterSave = isDirtyAfterSave
+        )
+
+        if (!pipeIsRunning(session)) {
+            closeSessionPipe(session, force = true)
+            throw RuntimeException("R2Pipe process failed to start.")
+        }
+
+        try {
+            pipeCmd(session, "e scr.color=false")
+        } catch (_: Exception) {
+        }
+
+        session.isConnected.set(true)
+        session.state.value = State.Success("Open R2Pipe session", "Session started successfully")
+        return session
+    }
+
     private suspend fun createSessionInternal(
         context: Context,
         filePath: String? = null,
@@ -182,44 +259,15 @@ object R2PipeManager {
     ): Result<String> {
         return withContext(Dispatchers.IO) {
             runCatching {
-                val isFrida = rawArgs?.contains("frida://") == true
-                val useHttp = SettingsManager.useHttpMode && !isFrida
-                val appCtx = context.applicationContext
-                val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
                 val sid = UUID.randomUUID().toString()
-
-                val http = if (useHttp) {
-                    R2pipeHttp(appCtx, filePath = filePath, flags = flags, rawArgs = rawArgs, port = SettingsManager.httpPort)
-                } else null
-                val stdio = if (!useHttp) {
-                    R2pipe(appCtx, filePath = filePath, flags = flags, rawArgs = rawArgs)
-                } else null
-
-                val session = R2Session(
-                    sessionId = sid,
-                    r2pipe = stdio,
-                    r2pipeHttp = http,
-                    isHttpMode = useHttp,
-                    projectPath = filePath,
-                    customCommand = rawArgs,
-                    projectInfo = buildProjectInfo(filePath, rawArgs),
-                    isFridaSession = isFrida,
-                    jobScope = scope,
+                val session = buildSession(
+                    context = context,
+                    sid = sid,
+                    filePath = filePath,
+                    flags = flags,
+                    rawArgs = rawArgs,
                     currentProjectId = pendingProjectId
                 )
-
-                if (!pipeIsRunning(session)) {
-                    closeSessionPipe(session, force = true)
-                    throw RuntimeException("R2Pipe process failed to start.")
-                }
-
-                try {
-                    pipeCmd(session, "e scr.color=false")
-                } catch (_: Exception) {
-                }
-
-                session.isConnected.set(true)
-                session.state.value = State.Success("Open R2Pipe session", "Session started successfully")
 
                 _sessions.value = _sessions.value.toMutableMap().apply { put(sid, session) }
                 _activeSessionId.value = sid
@@ -227,6 +275,45 @@ object R2PipeManager {
                 pendingProjectId = null
                 _state.value = session.state.value
                 sid
+            }
+        }
+    }
+
+    suspend fun replaceActiveSession(
+        context: Context,
+        filePath: String? = null,
+        flags: String = "",
+        rawArgs: String? = null
+    ): Result<Unit> {
+        val oldSession = activeSession()
+            ?: return Result.failure(IllegalStateException("No active session."))
+
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val reconnectHttpPort = if (oldSession.isHttpMode) {
+                    (oldSession.httpPort ?: SettingsManager.httpPort) + 1
+                } else {
+                    SettingsManager.httpPort
+                }
+
+                val newSession = buildSession(
+                    context = context,
+                    sid = oldSession.sessionId,
+                    filePath = filePath,
+                    flags = flags,
+                    rawArgs = rawArgs,
+                    httpPort = reconnectHttpPort
+                )
+
+                closeSessionPipe(oldSession, force = true)
+
+                _sessions.value = _sessions.value.toMutableMap().apply {
+                    put(oldSession.sessionId, newSession)
+                }
+                _activeSessionId.value = oldSession.sessionId
+                _state.value = newSession.state.value
+                _sessionId.incrementAndGet()
+                pendingProjectId = null
             }
         }
     }

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -63,6 +64,7 @@ fun ProjectSettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val saveState by viewModel.saveProjectState.collectAsState()
+    val reconnectState by viewModel.reconnectState.collectAsState()
     val staticProjectLoadState by r2fridaViewModel.staticProjectLoadState.collectAsState()
     val fridaMappings by r2fridaViewModel.mappings.collectAsState()
     val isFridaSession = R2PipeManager.isR2FridaSession
@@ -104,7 +106,15 @@ fun ProjectSettingsScreen(
             onDismissRequest = { showManual = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            R2ManualScreen(onBack = { showManual = false })
+            R2ManualScreen(
+                onBack = { showManual = false },
+                reconnecting = reconnectState is ReconnectState.Reconnecting,
+                onReconnect = if (!isFridaSession) {
+                    { viewModel.onEvent(ProjectEvent.ReconnectCurrentSession) }
+                } else {
+                    null
+                }
+            )
         }
     }
 
@@ -133,6 +143,28 @@ fun ProjectSettingsScreen(
                 viewModel.onEvent(ProjectEvent.ResetSaveState)
             }
             else -> {}
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(reconnectState) {
+        when (reconnectState) {
+            is ReconnectState.Success -> {
+                android.widget.Toast.makeText(
+                    context,
+                    (reconnectState as ReconnectState.Success).message,
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+                viewModel.onEvent(ProjectEvent.ResetReconnectState)
+            }
+            is ReconnectState.Error -> {
+                android.widget.Toast.makeText(
+                    context,
+                    (reconnectState as ReconnectState.Error).message,
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+                viewModel.onEvent(ProjectEvent.ResetReconnectState)
+            }
+            else -> Unit
         }
     }
 
@@ -582,6 +614,54 @@ fun ProjectSettingsScreen(
                         else 
                             MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+        }
+
+        if (!isFridaSession) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = reconnectState !is ReconnectState.Reconnecting) {
+                        viewModel.onEvent(ProjectEvent.ReconnectCurrentSession)
+                    },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (reconnectState is ReconnectState.Reconnecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(8.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.proj_reconnect_title),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Text(
+                            text = stringResource(R.string.proj_reconnect_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
         }

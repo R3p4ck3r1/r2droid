@@ -107,7 +107,7 @@ class AiRepository @Inject constructor() {
         val json = JSONObject(data)
         val choices = json.optJSONArray("choices") ?: return ""
         val delta = choices.optJSONObject(0)?.optJSONObject("delta") ?: return ""
-        return delta.optString("content", "")
+        return delta.optNonNullString("content")
     }
 
     private fun streamResponsesApi(
@@ -199,10 +199,24 @@ class AiRepository @Inject constructor() {
         if (eventPayload.isBlank()) return ""
         val json = JSONObject(eventPayload)
         return when {
-            json.optString("type") == "response.output_text.delta" -> json.optString("delta", "")
-            json.has("delta") -> json.optString("delta", "")
+            json.optString("type") == "response.output_text.delta" -> json.optNonNullString("delta")
+            json.has("delta") -> json.optNonNullString("delta")
             json.optString("type") == "response.completed" -> ""
             else -> ""
+        }
+    }
+
+    /**
+     * 某些 provider 会返回 `{"content": null}` 或 `{"delta": null}` 这类空增量。
+     * `JSONObject.optString()` 在值为 `JSONObject.NULL` 时会返回字面量 `"null"`，
+     * 从而被上层直接拼进流式文本里，所以这里统一滤掉。
+     */
+    private fun JSONObject.optNonNullString(key: String): String {
+        val value = opt(key)
+        return when (value) {
+            null, JSONObject.NULL -> ""
+            is String -> value
+            else -> value.toString()
         }
     }
 

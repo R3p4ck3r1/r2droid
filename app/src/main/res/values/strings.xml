@@ -342,6 +342,20 @@
     <string name="proj_session_connected">Connected</string>
     <string name="proj_session_disconnected">Disconnected</string>
     <string name="proj_session_saved">Saved</string>
+    <string name="proj_reconnect_title">Reconnect Backend</string>
+    <string name="proj_reconnect_desc">Restart a fresh r2 backend and replace the current backend without leaving this project</string>
+    <string name="proj_reconnect_action">Reconnect Now</string>
+    <string name="proj_reconnecting_action">Reconnecting...</string>
+    <string name="proj_reconnect_success">Backend reconnected successfully</string>
+    <string name="proj_reconnect_success_restored">Backend reconnected and restored from the current session snapshot</string>
+    <string name="proj_reconnect_success_saved_project">Backend reconnected and restored from the saved project snapshot</string>
+    <string name="proj_reconnect_success_reopened">Backend reconnected with the default startup command</string>
+    <string name="proj_reconnect_success_restore_warning">Backend reconnected, but failed to restore session data: %1$s</string>
+    <string name="proj_reconnect_missing_saved_project">Backend reconnected, but no saved project snapshot was found. Reopened with the default startup command.</string>
+    <string name="proj_reconnect_no_session">No active session is available for reconnect</string>
+    <string name="proj_reconnect_no_target">No startup target is available for reconnect</string>
+    <string name="proj_reconnect_failed">Failed to reconnect backend</string>
+    <string name="proj_reconnect_restore_unknown_error">Unknown restore error</string>
 
     <!-- Debug Screen -->
     <string name="debug_command_label">R2 Command</string>
