@@ -109,11 +109,7 @@ fun ProjectSettingsScreen(
             R2ManualScreen(
                 onBack = { showManual = false },
                 reconnecting = reconnectState is ReconnectState.Reconnecting,
-                onReconnect = if (!isFridaSession) {
-                    { viewModel.onEvent(ProjectEvent.ReconnectCurrentSession) }
-                } else {
-                    null
-                }
+                onReconnect = { viewModel.onEvent(ProjectEvent.ReconnectCurrentSession) }
             )
         }
     }
@@ -618,50 +614,48 @@ fun ProjectSettingsScreen(
             }
         }
 
-        if (!isFridaSession) {
-            Spacer(modifier = Modifier.height(16.dp))
-            Card(
+        Spacer(modifier = Modifier.height(16.dp))
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = reconnectState !is ReconnectState.Reconnecting) {
+                    viewModel.onEvent(ProjectEvent.ReconnectCurrentSession)
+                },
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer
+            )
+        ) {
+            Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = reconnectState !is ReconnectState.Reconnecting) {
-                        viewModel.onEvent(ProjectEvent.ReconnectCurrentSession)
-                    },
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                )
+                    .padding(16.dp)
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    if (reconnectState is ReconnectState.Reconnecting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.padding(8.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                    }
+                if (reconnectState is ReconnectState.Reconnecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.padding(8.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.proj_reconnect_title),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                        Text(
-                            text = stringResource(R.string.proj_reconnect_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
-                        )
-                    }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.proj_reconnect_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Text(
+                        text = stringResource(R.string.proj_reconnect_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                    )
                 }
             }
         }

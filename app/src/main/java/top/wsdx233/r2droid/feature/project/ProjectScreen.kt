@@ -94,7 +94,7 @@ fun ProjectScreen(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = false,
+        gesturesEnabled = drawerState.isOpen,
         drawerContent = {
             ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.82f)) {
                 Column(
@@ -221,11 +221,16 @@ fun ProjectScreen(
 
     // Handle back press with save/update confirmation
     androidx.activity.compose.BackHandler(
-        enabled = uiState is ProjectUiState.Success &&
+        enabled = !drawerState.isOpen &&
+                uiState is ProjectUiState.Success &&
                 !R2PipeManager.isR2FridaSession &&
                 (R2PipeManager.currentProjectId == null || R2PipeManager.isDirtyAfterSave)
     ) {
         showExitDialog = true
+    }
+
+    androidx.activity.compose.BackHandler(enabled = drawerState.isOpen) {
+        drawerScope.launch { drawerState.close() }
     }
 
     // Handle save/update completion when exiting
