@@ -1,12 +1,13 @@
 package top.wsdx233.r2droid.service
 
-import android.app.Notification
+import androidx.core.app.NotificationCompat
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+// import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import top.wsdx233.r2droid.R
@@ -35,10 +36,10 @@ class KeepAliveService : Service() {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
                     context.getString(R.string.keep_alive_channel_name),
-                    NotificationManager.IMPORTANCE_LOW
+                                                  NotificationManager.IMPORTANCE_LOW
                 )
                 context.getSystemService(NotificationManager::class.java)
-                    .createNotificationChannel(channel)
+                .createNotificationChannel(channel)
             }
         }
     }
@@ -58,20 +59,44 @@ class KeepAliveService : Service() {
             launchIntent,
             PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
+
+        // val appIcon = Icon.createWithResource(this, R.drawable.icon)
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationCompat.Builder(this, CHANNEL_ID)
         } else {
             @Suppress("DEPRECATION")
-            Notification.Builder(this)
+            NotificationCompat.Builder(this)
         }
-            .setContentTitle(getString(R.string.keep_alive_notification_title))
-            .setContentText(getString(R.string.keep_alive_notification_text))
-            .setSmallIcon(R.drawable.icon)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        // Set BigTextStyle (must use one of BigTextStyle / ProgressStyle / CallStyle / MetricStyle)
+        val bigTextStyle = NotificationCompat.BigTextStyle()
+        .setBigContentTitle(getString(R.string.keep_alive_notification_title))
+        .bigText(getString(R.string.keep_alive_notification_text))
+
+        builder
+        .setContentTitle(getString(R.string.keep_alive_notification_title))
+        .setContentText(getString(R.string.keep_alive_notification_text))
+        .setSmallIcon(R.drawable.icon)
+        // .setLargeIcon(appIcon)
+        .setContentIntent(pi)
+        .setOngoing(true) // must ongoing
+        .setStyle(bigTextStyle) // Key: Meet the real-time update style requirements
+        .setCategory(NotificationCompat.CATEGORY_SERVICE)
+        .setPriority(NotificationCompat.PRIORITY_LOW)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .also { b ->
+            // Android 16+ Live Updates
+            if (Build.VERSION.SDK_INT >= 36) {
+                b.setRequestPromotedOngoing(true)
+                b.setShortCriticalText("R2droid")
+            }
+        }
+        .build()
+        .let { notification ->
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
         return START_STICKY
     }
 
