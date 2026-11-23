@@ -2,6 +2,7 @@ package top.wsdx233.r2droid.core.data.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.core.content.edit
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import top.wsdx233.r2droid.util.AppVariant
 import top.wsdx233.r2droid.util.ProotInstaller
 import java.io.File
+import java.util.Locale
 
 object SettingsManager {
     private const val PREFS_NAME = "r2droid_settings"
@@ -31,6 +33,7 @@ object SettingsManager {
     private const val KEY_MENU_AT_TOUCH = "menu_at_touch"
     private const val KEY_AI_ENABLED = "ai_enabled"
     private const val KEY_AI_OUTPUT_TRUNCATE_LIMIT = "ai_output_truncate_limit"
+    private const val KEY_AI_MAX_TOOL_ROUNDS = "ai_max_tool_rounds"
     private const val KEY_USE_HTTP_MODE = "use_http_mode"
     private const val KEY_USE_PROOT_MODE = "use_proot_mode"
     private const val KEY_TERMINAL_LAUNCH_MODE = "terminal_launch_mode"
@@ -127,6 +130,20 @@ object SettingsManager {
         get() = prefs.getString(KEY_LANGUAGE, "system") ?: "system"
         set(value) { prefs.edit { putString(KEY_LANGUAGE, value) } }
 
+    /** Applies the saved UI language before the activity initializes settings. */
+    fun withAppLanguage(context: Context): Context {
+        val savedLanguage = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_LANGUAGE, null)
+        val locale = appLocale(savedLanguage) ?: return context
+        return context.createConfigurationContext(Configuration().apply { setLocale(locale) })
+    }
+
+    internal fun appLocale(language: String?): Locale? = when (language) {
+        null, "system" -> null
+        "zh" -> Locale.SIMPLIFIED_CHINESE
+        else -> Locale.forLanguageTag(language).takeIf { it.language.isNotEmpty() }
+    }
+
     var projectHome: String?
         get() = prefs.getString(KEY_PROJECT_HOME, null)
         set(value) { prefs.edit { putString(KEY_PROJECT_HOME, value) } }
@@ -192,6 +209,11 @@ object SettingsManager {
     var aiOutputTruncateLimit: Int
         get() = prefs.getInt(KEY_AI_OUTPUT_TRUNCATE_LIMIT, 100000)
         set(value) { prefs.edit { putInt(KEY_AI_OUTPUT_TRUNCATE_LIMIT, value) } }
+
+    /** 0 means unlimited tool rounds. */
+    var aiMaxToolRounds: Int
+        get() = prefs.getInt(KEY_AI_MAX_TOOL_ROUNDS, 0).coerceAtLeast(0)
+        set(value) { prefs.edit { putInt(KEY_AI_MAX_TOOL_ROUNDS, value.coerceAtLeast(0)) } }
 
     var useHttpMode: Boolean
         get() = prefs.getBoolean(KEY_USE_HTTP_MODE, false)

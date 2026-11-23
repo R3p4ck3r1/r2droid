@@ -156,8 +156,10 @@
     <string name="about_contact_comment">// Reach out</string>
     <string name="about_repo_value">git clone .../r2droid</string>
     <string name="about_repo_comment">// Source Code</string>
-    <string name="about_core_value">radare2 @ 6.1.0</string>
-    <string name="about_core_comment">// Powering the engine</string>
+    <string name="about_core_value">radare2 @ %1$s</string>
+    <string name="about_core_not_bundled">Not bundled (PRoot-only build)</string>
+    <string name="about_core_unavailable">Bundled version unavailable</string>
+    <string name="about_core_comment">// APK contents, not the active engine</string>
     <string name="about_contributors_comment">// GitHub contributors (live)</string>
     <string name="about_contributors_loading">// loading contributors from GitHub API...</string>
     <string name="about_contributors_error">// fetch failed: %1$s</string>
@@ -175,6 +177,7 @@
     <string name="settings_language_english">English</string>
     <string name="settings_language_chinese">中文</string>
     <string name="settings_language_russian">Русский</string>
+    <string name="settings_language_portuguese_brazil">Português (Brasil)</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_save">Save</string>
     <string name="settings_content_label">Content</string>
@@ -257,6 +260,7 @@
     <string name="menu_disassembly">Disassembly</string>
     <string name="menu_custom_command">Custom Command...</string>
     <string name="menu_modify_submenu">Modify...</string>
+    <string name="menu_more_submenu">More...</string>
     <string name="menu_opcodes">Opcode</string>
     <string name="menu_bytes">Bytes</string>
     <string name="menu_full_row">Full Row</string>
@@ -493,13 +497,16 @@
     <string name="debug_panel_tab_trace">Trace</string>
     <string name="debug_panel_pc">PC: %1$s</string>
     <string name="debug_panel_no_pc">--</string>
+    <string name="debug_panel_stop_reason">Stop reason: %1$s</string>
+    <string name="debug_esil_edit_locked">Stop ESIL to edit this file. Simulated writes are temporary.</string>
+    <string name="debug_panel_stop_instruction">Instruction address: %1$s</string>
+    <string name="debug_panel_stop_access">Memory access address: %1$s</string>
     <string name="debug_footer_next_pc">Next PC: %1$s</string>
     <string name="debug_register_auto_show">Auto show registers</string>
     <string name="debug_panel_start">Start Debug</string>
     <string name="debug_panel_settings">Debug Settings</string>
     <string name="debug_panel_progress">Debug operation in progress</string>
     <string name="debug_panel_pause">Pause</string>
-    <string name="debug_panel_restart">Restart Debug</string>
     <string name="debug_panel_continue">Continue</string>
     <string name="debug_panel_step_into">Step Into</string>
     <string name="debug_panel_step_over">Step Over</string>
@@ -660,6 +667,17 @@
     <string name="graph_no_data">No graph data</string>
     <string name="menu_graph_xrefs">Cross References</string>
     <string name="menu_graph_detail">View Details</string>
+    <string name="graph_fab_menu">Flowchart Actions</string>
+    <string name="graph_close_menu">Close Menu</string>
+    <string name="graph_action_share">Share Flowchart</string>
+    <string name="graph_action_save_gallery">Save to Gallery</string>
+    <string name="graph_action_zoom_in">Zoom In</string>
+    <string name="graph_action_zoom_out">Zoom Out</string>
+    <string name="graph_action_fit">Fit to Screen</string>
+    <string name="graph_share_title">Share Flowchart</string>
+    <string name="graph_saved_to_gallery">Flowchart saved to gallery</string>
+    <string name="graph_export_failed">Export failed: %s</string>
+    <string name="graph_exporting">Exporting flowchart…</string>
 
     <!-- Instruction Detail Dialog -->
     <string name="instr_detail_title">Instruction Detail</string>
@@ -802,6 +820,46 @@
     <string name="features_title">Features</string>
     <string name="feature_r2frida_title">r2frida</string>
     <string name="feature_r2frida_desc">Powerful dynamic instrumentation integration</string>
+    <string name="feature_r2flutter_title">Flutter AOT</string>
+    <string name="feature_r2flutter_desc">Analyze Dart AOT snapshots in Flutter applications</string>
+
+    <!-- r2flutter -->
+    <string name="r2flutter_title">Flutter AOT</string>
+    <string name="r2flutter_reinstall">Reinstall backend</string>
+    <string name="r2flutter_backend_ready">Backend ready</string>
+    <string name="r2flutter_backend_native">Native ARM64 backend</string>
+    <string name="r2flutter_backend_proot">Proot r2pm backend</string>
+    <string name="r2flutter_backend_not_installed">Backend not installed</string>
+    <string name="r2flutter_install_native_desc">Download the ARM64 plugin for the bundled radare2 runtime</string>
+    <string name="r2flutter_install_proot_desc">Install the plugin in the prepared Proot environment with r2pm</string>
+    <string name="r2flutter_install">Install backend</string>
+    <string name="r2flutter_install_failed">Installation failed</string>
+    <string name="r2flutter_choose_target">Choose APK or libapp.so</string>
+    <string name="r2flutter_resolving_target">Preparing target…</string>
+    <string name="r2flutter_open_analysis">Open analysis</string>
+    <string name="proj_category_r2flutter">Flutter</string>
+    <string name="r2flutter_tab_overview">Overview</string>
+    <string name="r2flutter_tab_functions">Functions</string>
+    <string name="r2flutter_tab_classes">Classes</string>
+    <string name="r2flutter_tab_strings">Strings</string>
+    <string name="r2flutter_tab_xrefs">Xrefs</string>
+    <string name="r2flutter_tab_instructions">Instructions</string>
+    <string name="r2flutter_tab_components">Components</string>
+    <string name="r2flutter_apply_classes">Apply classes</string>
+    <string name="r2flutter_analysis_running">Running Dart-aware analysis…</string>
+    <string name="r2flutter_name_pool">Heuristic name pool</string>
+    <string name="r2flutter_name_pool_desc">Use sequential package and Dart strings for unresolved names</string>
+    <string name="r2flutter_obfuscation_map">Obfuscation map</string>
+    <string name="r2flutter_obfuscation_map_none">No map selected</string>
+    <string name="r2flutter_choose_map">Choose</string>
+    <string name="r2flutter_profile">Dart profile</string>
+    <string name="r2flutter_apply_profile">Apply profile</string>
+    <string name="r2flutter_search_functions">Search Dart functions</string>
+    <string name="r2flutter_search_classes">Search classes, fields, and methods</string>
+    <string name="r2flutter_search_strings">Search Dart strings</string>
+    <string name="r2flutter_search_xrefs">Search Dart references</string>
+    <string name="r2flutter_search_instructions">Search instruction entries</string>
+    <string name="r2flutter_search_components">Search recovered components</string>
     <string name="feature_custom_start_title">Custom Start</string>
     <string name="feature_custom_start_desc">Run a fully custom R2 command</string>
     <string name="feature_terminal_title">Advanced Terminal</string>
@@ -893,14 +951,15 @@
     <string name="r2frida_install_installing">Installing…</string>
     <string name="r2frida_install_fetching">Fetching release info…</string>
     <string name="r2frida_install_downloading">Downloading plugin…</string>
-    <string name="r2frida_install_extracting">Extracting files…</string>
     <string name="r2frida_installing_in_proot">Installing r2frida in proot…</string>
     <string name="r2frida_install_proot_desc">Proot mode is enabled. r2frida will be installed inside the proot environment through r2pm instead of downloading the Android plugin package.</string>
     <string name="r2frida_install_done">Installation complete</string>
     <string name="r2frida_install_continue">Continue</string>
     <string name="r2frida_install_switch_hint">Try switching the download source below and retry</string>
     <string name="r2frida_source_github">Source: GitHub (International)</string>
-    <string name="r2frida_source_gitee">Source: Gitee (China)</string>
+    <string name="r2frida_source_gitee">Source: Gitee (GitHub fallback)</string>
+    <string name="r2frida_install_no_github_asset">Could not find a compatible r2frida download for bundled radare2 %1$s on GitHub. Check your connection or try Gitee.</string>
+    <string name="r2frida_install_no_mirror_or_github_asset">Could not find a compatible r2frida download for bundled radare2 %1$s on Gitee or GitHub. Check your connection to GitHub and retry.</string>
     <!-- Keep Alive / Background -->
     <string name="settings_background">Background</string>
 
@@ -934,7 +993,7 @@
     <string name="terminal_launch_proot_title">Proot terminal</string>
     <string name="terminal_launch_proot_desc">Enter the configured Ubuntu proot environment with radare2 tools.</string>
     <string name="terminal_launch_system_title">System terminal</string>
-    <string name="terminal_launch_system_desc">Use the Android shell and bundled radare2 environment without entering proot.</string>
+    <string name="terminal_launch_system_desc">Use the Android system shell without entering PRoot.</string>
     <string name="terminal_launch_do_not_ask_again">Don’t ask again</string>
     <string name="terminal_launch_confirm">Open terminal</string>
 
@@ -1205,4 +1264,10 @@
     <string name="switch_arch_default_desc">Restore architecture settings to their initial state</string>
     <string name="switch_arch_manual_desc">Execute custom commands in the terminal for setup</string>
     <string name="switch_arch_toast">Architecture switched</string>
+    <string name="switch_arch_arm32">32-bit ARM</string>
+    <string name="switch_arch_thumb32">32-bit ARM Thumb</string>
+    <string name="switch_arch_arm64">64-bit ARM</string>
+    <string name="switch_arch_x64">x64 (x86-64)</string>
+    <string name="disasm_scrollbar_failed">Could not load instructions at this address</string>
+    <string name="disasm_scrollbar_back">Back to loaded content</string>
 </resources>

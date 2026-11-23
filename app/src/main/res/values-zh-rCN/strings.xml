@@ -98,8 +98,10 @@
     <string name="about_contact_comment">// 联系方式</string>
     <string name="about_repo_value">git clone .../r2droid</string>
     <string name="about_repo_comment">// 源代码</string>
-    <string name="about_core_value">radare2 @ 6.1.0</string>
-    <string name="about_core_comment">// 核心引擎</string>
+    <string name="about_core_value">radare2 @ %1$s</string>
+    <string name="about_core_not_bundled">未内置（仅 PRoot 版）</string>
+    <string name="about_core_unavailable">无法读取内置版本</string>
+    <string name="about_core_comment">// APK 内置内容，并非当前运行的引擎</string>
     <string name="about_contributors_comment">// GitHub 贡献者（实时）</string>
     <string name="about_contributors_loading">// 正在从 GitHub API 获取贡献者...</string>
     <string name="about_contributors_error">// 获取失败: %1$s</string>
@@ -117,6 +119,7 @@
     <string name="settings_language_english">English</string>
     <string name="settings_language_chinese">中文</string>
     <string name="settings_language_russian">俄语</string>
+    <string name="settings_language_portuguese_brazil">Português (Brasil)</string>
     <string name="settings_cancel">取消</string>
     <string name="settings_save">保存</string>
     <string name="settings_content_label">内容</string>
@@ -202,6 +205,7 @@
     <string name="menu_disassembly">反汇编视图</string>
     <string name="menu_custom_command">自定义命令...</string>
     <string name="menu_modify_submenu">修改...</string>
+    <string name="menu_more_submenu">更多...</string>
     <string name="menu_opcodes">机器码</string>
     <string name="menu_bytes">字节码</string>
     <string name="menu_full_row">完整行</string>
@@ -437,13 +441,16 @@
     <string name="debug_panel_tab_trace">追踪</string>
     <string name="debug_panel_pc">PC: %1$s</string>
     <string name="debug_panel_no_pc">--</string>
+    <string name="debug_panel_stop_reason">停止原因：%1$s</string>
+    <string name="debug_esil_edit_locked">请先关闭 ESIL 调试再编辑文件。模拟写入仅临时有效。</string>
+    <string name="debug_panel_stop_instruction">指令地址：%1$s</string>
+    <string name="debug_panel_stop_access">内存访问地址：%1$s</string>
     <string name="debug_footer_next_pc">下个 PC: %1$s</string>
     <string name="debug_register_auto_show">自动弹出寄存器</string>
     <string name="debug_panel_start">开始调试</string>
     <string name="debug_panel_settings">调试设置</string>
     <string name="debug_panel_progress">调试操作进行中</string>
     <string name="debug_panel_pause">暂停</string>
-    <string name="debug_panel_restart">重新开始调试</string>
     <string name="debug_panel_continue">继续</string>
     <string name="debug_panel_step_into">单步进入</string>
     <string name="debug_panel_step_over">单步越过</string>
@@ -662,6 +669,17 @@
     <string name="graph_no_data">无图形数据</string>
     <string name="menu_graph_xrefs">交叉引用</string>
     <string name="menu_graph_detail">查看详情</string>
+    <string name="graph_fab_menu">流程图操作</string>
+    <string name="graph_close_menu">关闭菜单</string>
+    <string name="graph_action_share">分享流程图</string>
+    <string name="graph_action_save_gallery">流程图保存到相册</string>
+    <string name="graph_action_zoom_in">增大缩放</string>
+    <string name="graph_action_zoom_out">减小缩放</string>
+    <string name="graph_action_fit">fit缩放</string>
+    <string name="graph_share_title">分享流程图</string>
+    <string name="graph_saved_to_gallery">流程图已保存到相册</string>
+    <string name="graph_export_failed">导出失败：%s</string>
+    <string name="graph_exporting">正在导出流程图…</string>
 
     <!-- Instruction Detail Dialog -->
     <string name="instr_detail_title">指令详情</string>
@@ -804,6 +822,46 @@
     <string name="features_title">功能</string>
     <string name="feature_r2frida_title">r2frida</string>
     <string name="feature_r2frida_desc">强大的动态插桩工具集成</string>
+    <string name="feature_r2flutter_title">Flutter AOT</string>
+    <string name="feature_r2flutter_desc">分析 Flutter 应用中的 Dart AOT 快照</string>
+
+    <!-- r2flutter -->
+    <string name="r2flutter_title">Flutter AOT</string>
+    <string name="r2flutter_reinstall">重新安装后端</string>
+    <string name="r2flutter_backend_ready">后端已就绪</string>
+    <string name="r2flutter_backend_native">原生 ARM64 后端</string>
+    <string name="r2flutter_backend_proot">Proot r2pm 后端</string>
+    <string name="r2flutter_backend_not_installed">后端尚未安装</string>
+    <string name="r2flutter_install_native_desc">为内置 radare2 运行时下载 ARM64 插件</string>
+    <string name="r2flutter_install_proot_desc">通过 r2pm 将插件安装到已准备的 Proot 环境</string>
+    <string name="r2flutter_install">安装后端</string>
+    <string name="r2flutter_install_failed">安装失败</string>
+    <string name="r2flutter_choose_target">选择 APK 或 libapp.so</string>
+    <string name="r2flutter_resolving_target">正在准备目标…</string>
+    <string name="r2flutter_open_analysis">打开分析</string>
+    <string name="proj_category_r2flutter">Flutter</string>
+    <string name="r2flutter_tab_overview">概览</string>
+    <string name="r2flutter_tab_functions">函数</string>
+    <string name="r2flutter_tab_classes">类</string>
+    <string name="r2flutter_tab_strings">字符串</string>
+    <string name="r2flutter_tab_xrefs">引用</string>
+    <string name="r2flutter_tab_instructions">指令表</string>
+    <string name="r2flutter_tab_components">组件</string>
+    <string name="r2flutter_apply_classes">应用类信息</string>
+    <string name="r2flutter_analysis_running">正在运行 Dart 感知分析…</string>
+    <string name="r2flutter_name_pool">启发式名称池</string>
+    <string name="r2flutter_name_pool_desc">使用 package 和 Dart 字符串为未解析条目推测名称</string>
+    <string name="r2flutter_obfuscation_map">混淆映射</string>
+    <string name="r2flutter_obfuscation_map_none">尚未选择映射文件</string>
+    <string name="r2flutter_choose_map">选择</string>
+    <string name="r2flutter_profile">Dart 配置版本</string>
+    <string name="r2flutter_apply_profile">应用配置版本</string>
+    <string name="r2flutter_search_functions">搜索 Dart 函数</string>
+    <string name="r2flutter_search_classes">搜索类、字段和方法</string>
+    <string name="r2flutter_search_strings">搜索 Dart 字符串</string>
+    <string name="r2flutter_search_xrefs">搜索 Dart 引用</string>
+    <string name="r2flutter_search_instructions">搜索指令表条目</string>
+    <string name="r2flutter_search_components">搜索已恢复组件</string>
     <string name="feature_custom_start_title">自定义启动</string>
     <string name="feature_custom_start_desc">运行完全自定义的 R2 指令</string>
     <string name="feature_terminal_title">高级终端</string>
@@ -895,14 +953,15 @@
     <string name="r2frida_install_installing">安装中…</string>
     <string name="r2frida_install_fetching">获取版本信息…</string>
     <string name="r2frida_install_downloading">下载插件中…</string>
-    <string name="r2frida_install_extracting">解压文件中…</string>
     <string name="r2frida_installing_in_proot">正在 proot 中安装 r2frida…</string>
     <string name="r2frida_install_proot_desc">当前已启用 Proot 模式。r2frida 将通过 r2pm 安装到 proot 环境中，而不是下载 Android 插件包。</string>
     <string name="r2frida_install_done">安装完成</string>
     <string name="r2frida_install_continue">继续</string>
     <string name="r2frida_install_switch_hint">可尝试切换下方的下载源后重试</string>
     <string name="r2frida_source_github">下载源：GitHub（国际）</string>
-    <string name="r2frida_source_gitee">下载源：Gitee（国内）</string>
+    <string name="r2frida_source_gitee">下载源：Gitee（不可用时使用 GitHub）</string>
+    <string name="r2frida_install_no_github_asset">未能在 GitHub 上找到与内置 radare2 %1$s 兼容的 r2frida 下载。请检查网络连接，或尝试 Gitee。</string>
+    <string name="r2frida_install_no_mirror_or_github_asset">未能在 Gitee 或 GitHub 上找到与内置 radare2 %1$s 兼容的 r2frida 下载。请检查到 GitHub 的连接后重试。</string>
     <!-- Keep Alive / Background -->
     <string name="settings_background">后台保活</string>
 
@@ -936,7 +995,7 @@
     <string name="terminal_launch_proot_title">Proot 终端</string>
     <string name="terminal_launch_proot_desc">进入已配置的 Ubuntu proot 环境，使用其中的 radare2 工具。</string>
     <string name="terminal_launch_system_title">系统终端</string>
-    <string name="terminal_launch_system_desc">使用 Android shell 和内置 radare2 环境，不进入 proot。</string>
+    <string name="terminal_launch_system_desc">使用 Android 系统 shell，不进入 PRoot。</string>
     <string name="terminal_launch_do_not_ask_again">不再询问</string>
     <string name="terminal_launch_confirm">打开终端</string>
 
@@ -1208,4 +1267,10 @@
     <string name="switch_arch_default_desc">将架构设置恢复为初始状态</string>
     <string name="switch_arch_manual_desc">在终端中执行自定义命令进行设置</string>
     <string name="switch_arch_toast">架构已切换</string>
+    <string name="switch_arch_arm32">32位 ARM</string>
+    <string name="switch_arch_thumb32">32位 ARM Thumb</string>
+    <string name="switch_arch_arm64">64位 ARM</string>
+    <string name="switch_arch_x64">x64 (x86-64)</string>
+    <string name="disasm_scrollbar_failed">无法加载此地址的指令</string>
+    <string name="disasm_scrollbar_back">返回已加载内容</string>
 </resources>

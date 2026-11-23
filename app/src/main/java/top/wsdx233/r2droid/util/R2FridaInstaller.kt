@@ -7,18 +7,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonPrimitive
+import top.wsdx233.r2droid.R
 import top.wsdx233.r2droid.core.data.prefs.SettingsManager
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipInputStream
 
 data class R2FridaInstallState(
     val status: Status = Status.IDLE,
@@ -26,13 +27,15 @@ data class R2FridaInstallState(
     val message: String = "",
     val version: String = ""
 ) {
-    enum class Status { IDLE, FETCHING, DOWNLOADING, EXTRACTING, INSTALLING, DONE, ERROR }
+    enum class Status { IDLE, FETCHING, DOWNLOADING, INSTALLING, DONE, ERROR }
 }
 
 object R2FridaInstaller {
     private const val TAG = "R2FridaInstaller"
-    private const val GITHUB_API = "https://api.github.com/repos/wsdx233/r2frida-android-arm64-build/releases/latest"
-    private const val GITEE_API = "https://gitee.com/api/v5/repos/wsdx233/r2frida-android-arm64-build/releases/latest"
+    private const val RELEASE_REPO = "wsdx233/r2frida-android-arm64-build"
+    private const val GITHUB_API = "https://api.github.com/repos/$RELEASE_REPO/releases/tags"
+    private const val GITEE_API = "https://gitee.com/api/v5/repos/$RELEASE_REPO/releases/tags"
+    private const val PLUGIN_FILE_NAME = "io_frida.so"
     private val jsonParser = Json { ignoreUnknownKeys = true }
 
     private val _state = MutableStateFlow(R2FridaInstallState())
@@ -45,7 +48,7 @@ object R2FridaInstaller {
         return if (SettingsManager.useProotMode) {
             ProotInstaller.isEnvironmentReady(context) && ProotInstaller.isR2FridaInstalled(context)
         } else {
-            getPluginsDir(context).listFiles()?.any { it.name.startsWith("io_frida") && it.name.endsWith(".so") } == true
+            File(getPluginsDir(context), PLUGIN_FILE_NAME).let { it.isFile && it.length() > 0L }
         }
     }
 
@@ -139,96 +142,116 @@ object R2FridaInstaller {
     private fun installHostPlugin(context: Context, useChinaSource: Boolean) {
         _state.value = R2FridaInstallState(R2FridaInstallState.Status.FETCHING, message = "Fetching release info...")
 
-        val apiUrl = if (useChinaSource) GITEE_API else GITHUB_API
-        val json = fetchJson(apiUrl)
-        val version = json["tag_name"]?.jsonPrimitive?.content ?: "unknown"
-        val assets = json["assets"]?.jsonArray ?: throw Exception("No assets found")
+        val runtime = checkNotNull(BundledRuntimeManifest.fromAssets(context.assets, requireRadare2 = true).radare2)
+        val asset = resolveHostAsset(runtime.version, useChinaSource, ::fetchRelease) ?: error(
+            context.getString(
+                if (useChinaSource) R.string.r2frida_install_no_mirror_or_github_asset
+                else R.string.r2frida_install_no_github_asset,
+                runtime.version
+            )
+        )
+        val version = asset.version
+        val pluginsDir = getPluginsDir(context).apply { mkdirs() }
+        val target = File(pluginsDir, PLUGIN_FILE_NAME)
+        val temporary = File(pluginsDir, "$PLUGIN_FILE_NAME.download")
 
-        val soAsset = assets.firstOrNull {
-            it.jsonObject["name"]?.jsonPrimitive?.content?.endsWith(".so") == true
-        }
-        val zipAsset = assets.firstOrNull {
-            val name = it.jsonObject["name"]?.jsonPrimitive?.content ?: ""
-            name.endsWith(".zip") && !name.startsWith("v")
-        }
-
-        val pluginsDir = getPluginsDir(context)
-        pluginsDir.mkdirs()
-
-        if (soAsset != null) {
-            val downloadUrl = soAsset.jsonObject["browser_download_url"]!!.jsonPrimitive.content
-            val fileName = soAsset.jsonObject["name"]!!.jsonPrimitive.content
-            val targetFile = File(pluginsDir, fileName)
-
+        try {
             _state.value = R2FridaInstallState(R2FridaInstallState.Status.DOWNLOADING, version = version)
-            downloadFile(downloadUrl, targetFile)
-            Os.chmod(targetFile.absolutePath, 493)
-        } else if (zipAsset != null) {
-            val downloadUrl = zipAsset.jsonObject["browser_download_url"]!!.jsonPrimitive.content
-            val tempZip = File(context.cacheDir, "r2frida_temp.zip")
-
-            _state.value = R2FridaInstallState(R2FridaInstallState.Status.DOWNLOADING, version = version)
-            downloadFile(downloadUrl, tempZip)
-
-            _state.value = R2FridaInstallState(R2FridaInstallState.Status.EXTRACTING, progress = 0.9f, version = version)
-            extractSoFromZip(tempZip, pluginsDir)
-            tempZip.delete()
-        } else {
-            throw Exception("No suitable asset found")
+            downloadFile(asset.downloadUrl, temporary)
+            _state.value = _state.value.copy(status = R2FridaInstallState.Status.INSTALLING, progress = 0.95f)
+            Os.chmod(temporary.absolutePath, 493)
+            Os.rename(temporary.absolutePath, target.absolutePath)
+        } finally {
+            temporary.delete()
         }
 
         _state.value = R2FridaInstallState(R2FridaInstallState.Status.DONE, progress = 1f, version = version)
     }
 
-    private fun fetchJson(apiUrl: String): JsonObject {
-        val conn = URL(apiUrl).openConnection() as HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 15000
-        conn.setRequestProperty("Accept", "application/json")
+    internal data class HostAsset(val version: String, val downloadUrl: String)
+
+    internal fun resolveHostAsset(
+        runtimeVersion: String,
+        useChinaSource: Boolean,
+        fetchRelease: (String) -> String?
+    ): HostAsset? {
+        val tag = "r2-$runtimeVersion"
+
+        fun findAsset(api: String, host: String): HostAsset? {
+            val text = fetchRelease("$api/$tag") ?: return null
+            val release = try {
+                jsonParser.parseToJsonElement(text) as? JsonObject
+            } catch (_: SerializationException) {
+                null
+            } ?: return null
+            if (release.stringValue("tag_name") != tag) return null
+
+            val downloadUrl = "https://$host/$RELEASE_REPO/releases/download/$tag/$PLUGIN_FILE_NAME"
+            val assets = release["assets"] as? JsonArray ?: return null
+            val hasMatchingAsset = assets.any { asset ->
+                asset is JsonObject && asset.stringValue("name") == PLUGIN_FILE_NAME &&
+                    asset.stringValue("browser_download_url") == downloadUrl
+            }
+            if (!hasMatchingAsset) return null
+            return HostAsset(release.stringValue("name").orEmpty().ifBlank { runtimeVersion }, downloadUrl)
+        }
+
+        if (useChinaSource) findAsset(GITEE_API, "gitee.com")?.let { return it }
+        return findAsset(GITHUB_API, "github.com")
+    }
+
+    private fun JsonObject.stringValue(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    private fun fetchRelease(apiUrl: String): String? {
         return try {
-            val text = conn.inputStream.bufferedReader().readText()
-            jsonParser.parseToJsonElement(text).jsonObject
-        } finally {
-            conn.disconnect()
+            val conn = URL(apiUrl).openConnection() as HttpURLConnection
+            try {
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                conn.setRequestProperty("Accept", "application/json")
+                val status = conn.responseCode
+                if (status !in 200..299) {
+                    Log.w(TAG, "Release lookup failed (HTTP $status): $apiUrl")
+                    null
+                } else {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: IOException) {
+            Log.w(TAG, "Release lookup failed: $apiUrl", e)
+            null
         }
     }
 
     private fun downloadFile(url: String, target: File) {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15000
+        conn.readTimeout = 60000
         conn.instanceFollowRedirects = true
-        val totalBytes = conn.contentLength.toLong()
         var downloaded = 0L
-
-        BufferedInputStream(conn.inputStream).use { input ->
-            FileOutputStream(target).use { output ->
-                val buffer = ByteArray(8192)
-                var len: Int
-                while (input.read(buffer).also { len = it } != -1) {
-                    output.write(buffer, 0, len)
-                    downloaded += len
-                    if (totalBytes > 0) {
-                        _state.value = _state.value.copy(
-                            progress = (downloaded.toFloat() / totalBytes).coerceAtMost(0.9f)
-                        )
+        try {
+            val totalBytes = conn.contentLengthLong
+            BufferedInputStream(conn.inputStream).use { input ->
+                FileOutputStream(target).use { output ->
+                    val buffer = ByteArray(8192)
+                    var len: Int
+                    while (input.read(buffer).also { len = it } != -1) {
+                        output.write(buffer, 0, len)
+                        downloaded += len
+                        if (totalBytes > 0) {
+                            _state.value = _state.value.copy(
+                                progress = (downloaded.toFloat() / totalBytes).coerceAtMost(0.9f)
+                            )
+                        }
                     }
                 }
             }
-        }
-        conn.disconnect()
-    }
-
-    private fun extractSoFromZip(zipFile: File, targetDir: File) {
-        ZipInputStream(zipFile.inputStream()).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory && entry.name.endsWith(".so")) {
-                    val outFile = File(targetDir, File(entry.name).name)
-                    FileOutputStream(outFile).use { fos -> zis.copyTo(fos) }
-                    Os.chmod(outFile.absolutePath, 493)
-                }
-                entry = zis.nextEntry
-            }
+            check(downloaded > 0 && (totalBytes < 0 || downloaded == totalBytes)) { "Incomplete r2frida download" }
+        } finally {
+            conn.disconnect()
         }
     }
 }

@@ -80,6 +80,15 @@ import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Base64
 
+private enum class SessionAction { Close, Exit, Reconnect }
+
+private data class CacheDiscardRequest(val action: SessionAction, val session: R2PipeManager.R2Session) {
+    val requiresActiveSession: Boolean get() = action != SessionAction.Close
+
+    fun isCurrent(): Boolean = R2PipeManager.sessions.value[session.sessionId]?.pipe === session.pipe &&
+        (!requiresActiveSession || R2PipeManager.activeSessionPipe === session.pipe)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProjectScreen(
@@ -88,7 +97,6 @@ fun ProjectScreen(
     val viewModel: ProjectViewModel = hiltViewModel()
     val uiState by viewModel.uiState.collectAsState()
     val logs by viewModel.logs.collectAsState()
-    val saveState by viewModel.saveProjectState.collectAsState()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
@@ -114,11 +122,72 @@ fun ProjectScreen(
     var selectedUtility by remember { mutableStateOf<UtilityTool?>(null) }
     var toolResultDialog by remember { mutableStateOf<String?>(null) }
 
-    suspend fun closeSessionAndCleanup(sessionId: String?) {
-        sessionId?.let { R2PipeManager.closeSession(it) }
-        withContext(Dispatchers.IO) {
-            AppCacheCleaner.clearAfterProjectExit(context)
+    var cacheDiscardRequest by remember { mutableStateOf<CacheDiscardRequest?>(null) }
+    var exitSession by remember { mutableStateOf<R2PipeManager.R2Session?>(null) }
+    var saveBeforeExit by remember { mutableStateOf(false) }
+    var exitProjectName by remember { mutableStateOf("") }
+    var pendingExitSave by remember { mutableStateOf<Any?>(null) }
+    var exitSaveError by remember { mutableStateOf<String?>(null) }
+
+    fun dismissExit() {
+        exitSession = null
+        saveBeforeExit = false
+        pendingExitSave = null
+        exitSaveError = null
+    }
+
+    fun perform(request: CacheDiscardRequest, discardWriteCache: Boolean = false) {
+        if (!request.isCurrent()) return
+        if (request.action == SessionAction.Reconnect) {
+            viewModel.reconnectCurrentSession(request.session, discardWriteCache)
+            return
         }
+        drawerScope.launch {
+            if (!R2PipeManager.closeSession(request.session, request.requiresActiveSession, discardWriteCache)) {
+                return@launch
+            }
+            withContext(Dispatchers.IO) { AppCacheCleaner.clearAfterProjectExit(context) }
+            if (request.action == SessionAction.Exit || R2PipeManager.sessions.value.isEmpty()) {
+                onNavigateBack()
+            }
+        }
+    }
+
+    fun requestAction(action: SessionAction, session: R2PipeManager.R2Session) {
+        val request = CacheDiscardRequest(action, session)
+        if (!request.isCurrent()) return
+        // Project “dirty” tracks analysis, not the cache. Do not probe a busy, disconnected,
+        // or ESIL-owned pipe: lack of a readable snapshot is not evidence that it is empty.
+        if (session.writeCacheEnabled) cacheDiscardRequest = request else perform(request)
+    }
+
+    fun saveAndExit(session: R2PipeManager.R2Session, projectId: String? = null) {
+        if (R2PipeManager.activeSessionPipe !== session.pipe || pendingExitSave != null ||
+            viewModel.saveProjectState.value is SaveProjectState.Saving) return
+        val attempt = Any()
+        pendingExitSave = attempt
+        exitSaveError = null
+        val finished: (Boolean) -> Unit = { success ->
+            if (pendingExitSave === attempt) {
+                pendingExitSave = null
+                if (R2PipeManager.activeSessionPipe === session.pipe) {
+                    if (success) {
+                        dismissExit()
+                        requestAction(SessionAction.Exit, session)
+                    } else {
+                        exitSaveError = (viewModel.saveProjectState.value as? SaveProjectState.Error)?.message
+                    }
+                }
+            }
+        }
+        if (projectId != null) viewModel.updateProject(projectId, expectedSession = session, onFinished = finished)
+        else viewModel.saveProject(exitProjectName, expectedSession = session, onFinished = finished)
+    }
+
+    val activeSession = sessions[activeSessionId]
+    androidx.compose.runtime.LaunchedEffect(activeSession?.pipe, sessions) {
+        if (exitSession?.let { it.pipe !== activeSession?.pipe } == true) dismissExit()
+        if (cacheDiscardRequest?.isCurrent() == false) cacheDiscardRequest = null
     }
 
     ModalNavigationDrawer(
@@ -163,15 +232,7 @@ fun ProjectScreen(
                                     R2PipeManager.switchActiveSession(session.sessionId)
                                     drawerScope.launch { drawerState.close() }
                                 },
-                                onClose = {
-                                    drawerScope.launch {
-                                        val isLastSession = sessions.size <= 1
-                                        closeSessionAndCleanup(session.sessionId)
-                                        if (isLastSession) {
-                                            onNavigateBack()
-                                        }
-                                    }
-                                }
+                                onClose = { requestAction(SessionAction.Close, session) }
                             )
                         }
                     }
@@ -203,11 +264,6 @@ fun ProjectScreen(
             }
         }
     ) {
-            // State for exit confirmation dialog
-            var showExitDialog by remember { mutableStateOf(false) }
-            var showSaveBeforeExitDialog by remember { mutableStateOf(false) }
-            var exitProjectName by remember { mutableStateOf("") }
-            var pendingExitOnSave by remember { mutableStateOf(false) }
 
             // Re-initialize when active session changes (e.g. switched from sidebar)
             androidx.compose.runtime.LaunchedEffect(activeSessionId) {
@@ -221,14 +277,14 @@ fun ProjectScreen(
             }
 
     // Handle project restoration or custom command
-    androidx.compose.runtime.LaunchedEffect(uiState, R2PipeManager.pendingCustomCommand, R2PipeManager.pendingRestoreFlags) {
+    androidx.compose.runtime.LaunchedEffect(uiState, R2PipeManager.pendingCustomCommand, R2PipeManager.pendingProjectRestore) {
         if (uiState is ProjectUiState.Analyzing && !pendingStartTriggered) {
             when {
                 R2PipeManager.pendingCustomCommand != null -> {
                     viewModel.onEvent(ProjectEvent.StartCustomCommandSession)
                     pendingStartTriggered = true
                 }
-                R2PipeManager.pendingRestoreFlags != null -> {
+                R2PipeManager.pendingProjectRestore != null -> {
                     viewModel.onEvent(ProjectEvent.StartRestoreSession)
                     pendingStartTriggered = true
                 }
@@ -238,139 +294,99 @@ fun ProjectScreen(
         }
     }
 
-    // Handle back press with save/update confirmation
+    val canOfferSaveOnBack = uiState is ProjectUiState.Success && activeSession != null &&
+        activeSessionId != tutorialDemoSessionId && !activeSession.isFridaSession
     androidx.activity.compose.BackHandler(
-        enabled = !drawerState.isOpen &&
-                uiState is ProjectUiState.Success &&
-                activeSessionId != tutorialDemoSessionId &&
-                !R2PipeManager.isR2FridaSession &&
-                (R2PipeManager.currentProjectId == null || R2PipeManager.isDirtyAfterSave)
+        enabled = !drawerState.isOpen && (canOfferSaveOnBack ||
+            (activeSession?.writeCacheEnabled == true && uiState !is ProjectUiState.Configuring &&
+                uiState !is ProjectUiState.Analyzing))
     ) {
-        showExitDialog = true
+        val session = R2PipeManager.activeSession()
+        if (session != null && session.pipe === activeSession?.pipe) {
+            when {
+                canOfferSaveOnBack && (session.currentProjectId == null || session.isDirtyAfterSave) -> exitSession = session
+                session.writeCacheEnabled -> requestAction(SessionAction.Exit, session)
+                else -> onNavigateBack()
+            }
+        }
     }
 
     androidx.activity.compose.BackHandler(enabled = drawerState.isOpen) {
         drawerScope.launch { drawerState.close() }
     }
 
-    // Handle save/update completion when exiting
-    androidx.compose.runtime.LaunchedEffect(saveState) {
-        if (pendingExitOnSave && saveState is SaveProjectState.Success) {
-            pendingExitOnSave = false
-            showSaveBeforeExitDialog = false
-            closeSessionAndCleanup(activeSessionId)
-            onNavigateBack()
-        }
-    }
-
-    // Exit confirmation dialog
-    if (showExitDialog) {
-        val isExistingProject = R2PipeManager.currentProjectId != null
+    exitSession?.takeIf { it.pipe === activeSession?.pipe }?.let { session ->
+        val projectId = session.currentProjectId
+        val isExistingProject = projectId != null
+        val saving = pendingExitSave != null
         AlertDialog(
-            onDismissRequest = { showExitDialog = false },
+            onDismissRequest = { dismissExit() },
             title = {
-                Text(stringResource(
-                    if (isExistingProject) R.string.project_exit_update_title
-                    else R.string.project_exit_title
-                ))
+                Text(stringResource(when {
+                    saveBeforeExit -> R.string.project_save_title
+                    isExistingProject -> R.string.project_exit_update_title
+                    else -> R.string.project_exit_title
+                }))
             },
             text = {
-                Text(stringResource(
-                    if (isExistingProject) R.string.project_exit_update_message
-                    else R.string.project_exit_message
-                ))
+                Column(modifier = Modifier.focusable(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (saveBeforeExit) {
+                        OutlinedTextField(
+                            value = exitProjectName,
+                            onValueChange = { exitProjectName = it },
+                            label = { Text(stringResource(R.string.project_save_name_hint)) },
+                            singleLine = true,
+                            enabled = !saving,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text(stringResource(if (isExistingProject) R.string.project_exit_update_message else R.string.project_exit_message))
+                    }
+                    if (session.writeCacheEnabled) Text(stringResource(R.string.write_cache_save_excludes_patches))
+                    exitSaveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
             },
             confirmButton = {
                 TextButton(
+                    enabled = !saving,
                     onClick = {
-                        showExitDialog = false
-                        if (isExistingProject) {
-                            // Directly update the existing project and exit on success
-                            pendingExitOnSave = true
-                            viewModel.onEvent(ProjectEvent.UpdateProject(R2PipeManager.currentProjectId!!))
-                        } else {
-                            // Show save-as-new dialog
-                            pendingExitOnSave = true
-                            showSaveBeforeExitDialog = true
-                            exitProjectName = R2PipeManager.currentFilePath?.let {
-                                java.io.File(it).name
-                            } ?: "Project"
-                        }
-                    }
-                ) {
-                    Text(stringResource(
-                        if (isExistingProject) R.string.project_exit_update
-                        else R.string.project_exit_save
-                    ))
-                }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(
-                        onClick = {
-                            showExitDialog = false
-                            onNavigateBack()
-                        }
-                    ) {
-                        Text(stringResource(top.wsdx233.r2droid.R.string.project_exit_minimize))
-                    }
-
-                    TextButton(
-                        onClick = {
-                            showExitDialog = false
-                            drawerScope.launch {
-                                closeSessionAndCleanup(activeSessionId)
-                                onNavigateBack()
+                        if (R2PipeManager.activeSessionPipe === session.pipe) {
+                            if (saveBeforeExit || isExistingProject) {
+                                saveAndExit(session, projectId)
+                            } else {
+                                exitProjectName = session.projectPath?.let { java.io.File(it).name } ?: "Project"
+                                saveBeforeExit = true
                             }
                         }
-                    ) {
-                        Text(stringResource(top.wsdx233.r2droid.R.string.project_exit_discard))
                     }
-                }
-            }
-        )
-    }
-
-    // Save before exit dialog
-    if (showSaveBeforeExitDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveBeforeExitDialog = false },
-            title = { Text(stringResource(top.wsdx233.r2droid.R.string.project_save_title)) },
-            text = {
-                Column(modifier = Modifier.focusable()) {
-                    OutlinedTextField(
-                        value = exitProjectName,
-                        onValueChange = { exitProjectName = it },
-                        label = { Text(stringResource(top.wsdx233.r2droid.R.string.project_save_name_hint)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.onEvent(ProjectEvent.SaveProject(exitProjectName))
-                    },
-                    enabled = saveState !is SaveProjectState.Saving
                 ) {
-                    if (saveState is SaveProjectState.Saving) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.padding(end = 8.dp),
-                            strokeWidth = 2.dp
-                        )
+                    if (saving) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.size(8.dp))
                     }
-                    Text(stringResource(top.wsdx233.r2droid.R.string.project_save))
+                    Text(stringResource(if (isExistingProject) R.string.project_exit_update else R.string.project_exit_save))
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        showSaveBeforeExitDialog = false
-                        onNavigateBack()
+                if (saveBeforeExit || saving) {
+                    TextButton(onClick = { dismissExit() }) {
+                        Text(stringResource(R.string.home_delete_cancel))
                     }
-                ) {
-                    Text(stringResource(top.wsdx233.r2droid.R.string.home_delete_cancel))
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            dismissExit()
+                            if (R2PipeManager.activeSessionPipe === session.pipe) onNavigateBack()
+                        }) {
+                            Text(stringResource(R.string.project_exit_minimize))
+                        }
+                        TextButton(onClick = {
+                            dismissExit()
+                            requestAction(SessionAction.Exit, session)
+                        }) {
+                            Text(stringResource(R.string.project_exit_discard))
+                        }
+                    }
                 }
             }
         )
@@ -389,11 +405,12 @@ fun ProjectScreen(
                     } else {
                         AnalysisConfigScreen(
                             filePath = state.filePath,
-                            onStartAnalysis = { cmd, writable, flags, saveAsProject, projectName, copyBinary ->
+                            onStartAnalysis = { cmd, writable, writeCacheEnabled, flags, saveAsProject, projectName, copyBinary ->
                                 viewModel.onEvent(
                                     ProjectEvent.StartAnalysisSession(
                                         cmd = cmd,
                                         writable = writable,
+                                        writeCacheEnabled = writeCacheEnabled,
                                         flags = flags,
                                         saveAsProject = saveAsProject,
                                         projectName = projectName,
@@ -405,7 +422,7 @@ fun ProjectScreen(
                     }
                 }
                 is ProjectUiState.Analyzing -> {
-                    AnalysisProgressScreen(logs = logs, isRestoring = R2PipeManager.pendingRestoreFlags != null)
+                    AnalysisProgressScreen(logs = logs, isRestoring = R2PipeManager.pendingProjectRestore != null)
                 }
                 else -> {
                     val sid = activeSessionId ?: "legacy-session"
@@ -414,11 +431,34 @@ fun ProjectScreen(
                             sessionId = sid,
                             viewModel = viewModel,
                             onOpenDrawer = { drawerScope.launch { drawerState.open() } },
-                            onNavigateBack = onNavigateBack
+                            onReconnect = {
+                                activeSession?.let { requestAction(SessionAction.Reconnect, it) }
+                            }
                         )
                     }
                 }
             }
+    }
+
+    cacheDiscardRequest?.takeIf { it.isCurrent() }?.let { request ->
+        val reconnect = request.action == SessionAction.Reconnect
+        WriteCacheDiscardDialog(
+            sessionName = request.session.projectInfo.title,
+            reconnect = reconnect,
+            onDismiss = { cacheDiscardRequest = null },
+            onMinimize = if (request.action == SessionAction.Exit) {
+                {
+                    cacheDiscardRequest = null
+                    if (request.isCurrent()) onNavigateBack()
+                }
+            } else null,
+            onDiscard = {
+                if (cacheDiscardRequest === request) {
+                    cacheDiscardRequest = null
+                    perform(request, discardWriteCache = true)
+                }
+            }
+        )
     }
 
     when (selectedUtility) {
@@ -445,6 +485,34 @@ fun ProjectScreen(
     toolResultDialog?.let { result ->
         ToolResultDialog(result = result, onDismiss = { toolResultDialog = null })
     }
+}
+
+@Composable
+internal fun WriteCacheDiscardDialog(
+    sessionName: String,
+    reconnect: Boolean,
+    onDismiss: () -> Unit,
+    onMinimize: (() -> Unit)? = null,
+    onDiscard: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(if (reconnect) R.string.write_cache_reconnect_title else R.string.write_cache_close_title)) },
+        text = { Text(stringResource(R.string.write_cache_discard_warning, sessionName)) },
+        confirmButton = {
+            TextButton(onClick = onDiscard) {
+                Text(stringResource(if (reconnect) R.string.write_cache_discard_reconnect else R.string.write_cache_discard_close))
+            }
+        },
+        dismissButton = {
+            Row {
+                onMinimize?.let {
+                    TextButton(onClick = it) { Text(stringResource(R.string.project_exit_minimize)) }
+                }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.home_delete_cancel)) }
+            }
+        }
+    )
 }
 
 @Composable

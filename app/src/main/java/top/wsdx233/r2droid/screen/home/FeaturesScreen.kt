@@ -60,6 +60,7 @@ import top.wsdx233.r2droid.util.TerminalLauncher
 fun FeaturesScreen(
     onBackClick: () -> Unit,
     onNavigateToR2Frida: () -> Unit = {},
+    onNavigateToR2Flutter: () -> Unit = {},
     onNavigateToPlugins: () -> Unit = {},
     onCustomStart: (String) -> Unit
 ) {
@@ -143,6 +144,14 @@ fun FeaturesScreen(
                 icon = Icons.Default.BugReport,
                 iconTint = Color(0xFFEF5350),
                 onClick = onNavigateToR2Frida
+            )
+
+            FeatureCard(
+                title = stringResource(R.string.feature_r2flutter_title),
+                description = stringResource(R.string.feature_r2flutter_desc),
+                icon = Icons.Default.Extension,
+                iconTint = Color(0xFF00897B),
+                onClick = onNavigateToR2Flutter
             )
 
             FeatureCard(

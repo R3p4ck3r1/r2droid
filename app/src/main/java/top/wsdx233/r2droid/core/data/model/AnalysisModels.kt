@@ -157,7 +157,9 @@ data class Section(
     val vSize: Long,
     val perm: String,
     val vAddr: Long,
-    val pAddr: Long
+    val pAddr: Long,
+    val type: String = "",
+    val flags: Long? = null
 ) {
     companion object {
         fun fromJson(json: JSONObject): Section {
@@ -167,7 +169,9 @@ data class Section(
                 vSize = json.optLong("vsize", 0),
                 perm = json.optString("perm", ""),
                 vAddr = json.optLong("vaddr", 0),
-                pAddr = json.optLong("paddr", 0)
+                pAddr = json.optLong("paddr", 0),
+                type = json.optString("type", ""),
+                flags = if (json.isNull("flags")) null else json.optLong("flags")
             )
         }
     }
@@ -378,6 +382,10 @@ data class DisasmRef(
     }
 }
 
+private val compactHex = HexFormat { upperCase = true; number.removeLeadingZeros = true }
+
+internal fun formatCompactAddress(addr: Long): String = addr.toHexString(compactHex)
+
 data class DisasmInstruction(
     val addr: Long,
     val opcode: String,
@@ -470,11 +478,8 @@ data class DisasmInstruction(
 
     // --- Pre-computed display strings (lazy, not part of equals/hashCode) ---
 
-    /** Compact hex address without leading zeros, min 4 chars */
-    val displayAddress: String by lazy {
-        val hex = "%X".format(addr)
-        if (hex.length <= 4) hex else hex.trimStart('0').ifEmpty { "0" }
-    }
+    /** Uppercase hexadecimal without a prefix or leading zeroes. */
+    val displayAddress: String by lazy { formatCompactAddress(addr) }
 
     /** Lowercase bytes, truncated to 8 chars + ellipsis if longer than 10 */
     val displayBytes: String by lazy {
@@ -484,22 +489,19 @@ data class DisasmInstruction(
 
     /** Pre-built inline comment from ptr/refs */
     val inlineComment: String by lazy {
+        if (ptr == null && !refptr) return@lazy ""
         buildString {
             if (ptr != null) {
-                val pHex = "%X".format(ptr)
-                val pDisplay = if (pHex.length <= 4) pHex else pHex.trimStart('0').ifEmpty { "0" }
-                append("; $pDisplay")
+                append("; ").append(formatCompactAddress(ptr))
             }
             if (refptr && refs.isNotEmpty()) {
                 val dataRef = refs.firstOrNull { it.type == "DATA" }
                 if (dataRef != null) {
                     if (isNotEmpty()) append(" ")
-                    val rHex = "%X".format(dataRef.addr)
-                    val rDisplay = if (rHex.length <= 4) rHex else rHex.trimStart('0').ifEmpty { "0" }
-                    append("[$rDisplay]")
+                    append('[').append(formatCompactAddress(dataRef.addr)).append(']')
                 }
             }
-        }.trim()
+        }
     }
 }
 
@@ -831,15 +833,31 @@ data class FunctionVariable(
     val name: String,
     val kind: String,
     val type: String,
-    val storage: String
+    val storage: String,
+    val refDisplay: String = ""
 ) {
     companion object {
         fun fromJson(json: JSONObject, storage: String): FunctionVariable {
+            val refDisplay = when (val ref = json.opt("ref")) {
+                is String -> ref.trim()
+                is JSONObject -> {
+                    val base = ref.optString("base", "").trim()
+                    val offset = ref.optLong("offset", 0L)
+                    if (base.isEmpty()) ""
+                    else when {
+                        offset > 0L -> "$base+0x${offset.toString(16)}"
+                        offset < 0L -> "$base-0x${(-offset).toString(16)}"
+                        else -> base
+                    }
+                }
+                else -> ""
+            }
             return FunctionVariable(
                 name = json.optString("name", ""),
                 kind = json.optString("kind", ""),
                 type = json.optString("type", ""),
-                storage = storage
+                storage = storage,
+                refDisplay = refDisplay
             )
         }
     }

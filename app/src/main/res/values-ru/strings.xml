@@ -132,8 +132,10 @@
     <string name="about_contact_comment">// Связаться</string>
     <string name="about_repo_value">git clone .../r2droid</string>
     <string name="about_repo_comment">// Исходный код</string>
-    <string name="about_core_value">radare2 @ 6.1.0</string>
-    <string name="about_core_comment">// Ядро движка</string>
+    <string name="about_core_value">radare2 @ %1$s</string>
+    <string name="about_core_not_bundled">Не входит в APK (сборка только с PRoot)</string>
+    <string name="about_core_unavailable">Не удалось прочитать версию встроенного radare2</string>
+    <string name="about_core_comment">// Содержимое APK, не версия запущенного движка</string>
     <string name="about_contributors_comment">// Контрибьюторы GitHub</string>
     <string name="about_contributors_loading">// загрузка контрибьюторов из GitHub API...</string>
     <string name="about_contributors_error">// ошибка загрузки: %1$s</string>
@@ -150,6 +152,8 @@
     <string name="settings_language_system">Системный</string>
     <string name="settings_language_english">English</string>
     <string name="settings_language_chinese">中文</string>
+    <string name="settings_language_russian">Русский</string>
+    <string name="settings_language_portuguese_brazil">Português (Brasil)</string>
     <string name="settings_cancel">Отмена</string>
     <string name="settings_save">Сохранить</string>
     <string name="settings_content_label">Контент</string>
@@ -232,6 +236,7 @@
     <string name="menu_disassembly">Дизассемблер</string>
     <string name="menu_custom_command">Произвольная команда...</string>
     <string name="menu_modify_submenu">Изменить...</string>
+    <string name="menu_more_submenu">Ещё...</string>
     <string name="menu_opcodes">Опкоды</string>
     <string name="menu_bytes">Байты</string>
     <string name="menu_full_row">Всю строку</string>
@@ -470,13 +475,16 @@
     <string name="debug_panel_tab_trace">Трасса</string>
     <string name="debug_panel_pc">PC: %1$s</string>
     <string name="debug_panel_no_pc">--</string>
+    <string name="debug_panel_stop_reason">Причина остановки: %1$s</string>
+    <string name="debug_esil_edit_locked">Завершите отладку ESIL, чтобы изменить файл. Запись при эмуляции временная.</string>
+    <string name="debug_panel_stop_instruction">Адрес инструкции: %1$s</string>
+    <string name="debug_panel_stop_access">Адрес обращения к памяти: %1$s</string>
     <string name="debug_footer_next_pc">Следующий PC: %1$s</string>
     <string name="debug_register_auto_show">Авто-показ регистров</string>
     <string name="debug_panel_start">Начать отладку</string>
     <string name="debug_panel_settings">Настройки отладки</string>
     <string name="debug_panel_progress">Операция отладки выполняется</string>
     <string name="debug_panel_pause">Пауза</string>
-    <string name="debug_panel_restart">Перезапустить отладку</string>
     <string name="debug_panel_continue">Продолжить</string>
     <string name="debug_panel_step_into">Шаг внутрь</string>
     <string name="debug_panel_step_over">Шаг через</string>
@@ -636,6 +644,17 @@
     <string name="graph_no_data">Нет данных для графа</string>
     <string name="menu_graph_xrefs">Перекрестные ссылки</string>
     <string name="menu_graph_detail">Показать детали</string>
+    <string name="graph_fab_menu">Действия с блок-схемой</string>
+    <string name="graph_close_menu">Закрыть меню</string>
+    <string name="graph_action_share">Поделиться блок-схемой</string>
+    <string name="graph_action_save_gallery">Сохранить в галерею</string>
+    <string name="graph_action_zoom_in">Увеличить</string>
+    <string name="graph_action_zoom_out">Уменьшить</string>
+    <string name="graph_action_fit">Вписать в экран</string>
+    <string name="graph_share_title">Поделиться блок-схемой</string>
+    <string name="graph_saved_to_gallery">Блок-схема сохранена в галерею</string>
+    <string name="graph_export_failed">Ошибка экспорта: %s</string>
+    <string name="graph_exporting">Экспорт блок-схемы…</string>
 
     <!-- Instruction Detail Dialog -->
     <string name="instr_detail_title">Детали инструкции</string>
@@ -803,12 +822,13 @@
     <string name="r2frida_install_installing">Установка…</string>
     <string name="r2frida_install_fetching">Получение информации о релизе…</string>
     <string name="r2frida_install_downloading">Скачивание плагина…</string>
-    <string name="r2frida_install_extracting">Распаковка файлов…</string>
     <string name="r2frida_install_done">Установка завершена</string>
     <string name="r2frida_install_continue">Продолжить</string>
     <string name="r2frida_install_switch_hint">Попробуйте сменить источник загрузки ниже и повторите</string>
     <string name="r2frida_source_github">Источник: GitHub (Международный)</string>
-    <string name="r2frida_source_gitee">Источник: Gitee (Китай)</string>
+    <string name="r2frida_source_gitee">Источник: Gitee (резервный — GitHub)</string>
+    <string name="r2frida_install_no_github_asset">Не удалось найти на GitHub версию r2frida для встроенного radare2 %1$s. Проверьте подключение или попробуйте Gitee.</string>
+    <string name="r2frida_install_no_mirror_or_github_asset">Не удалось найти на Gitee или GitHub версию r2frida для встроенного radare2 %1$s. Проверьте подключение к GitHub и повторите попытку.</string>
     
     <!-- Keep Alive / Background -->
     <string name="settings_background">Фоновый режим</string>
@@ -1051,4 +1071,11 @@
     <string name="switch_arch_default_desc">Сброс настроек архитектуры в исходное состояние</string>
     <string name="switch_arch_manual_desc">Выполните свои команды в терминале для настройки</string>
     <string name="switch_arch_toast">Архитектура переключена</string>
+    <string name="switch_arch_arm32">32-бит ARM</string>
+    <string name="switch_arch_thumb32">32-бит ARM Thumb</string>
+    <string name="switch_arch_arm64">64-бит ARM</string>
+    <string name="switch_arch_x64">x64 (x86-64)</string>
+
+    <string name="terminal_launch_system_title">Системный терминал</string>
+    <string name="terminal_launch_system_desc">Использовать системную оболочку Android без входа в PRoot.</string>
 </resources>

@@ -2,12 +2,14 @@ package top.wsdx233.r2droid.feature.ai.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.core.content.edit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 
 object AiSettingsManager {
+    private const val TAG = "AiSettingsManager"
     private const val PREFS_NAME = "r2droid_ai_settings"
     private const val KEY_PROVIDER_CONFIG = "provider_config"
     private const val KEY_SYSTEM_PROMPT = "system_prompt"
@@ -26,6 +28,7 @@ object AiSettingsManager {
     private val _sessionsFlow = MutableStateFlow<List<ChatSessionMetadata>>(emptyList())
     val sessionsFlow = _sessionsFlow.asStateFlow()
 
+    @Synchronized
     fun initialize(context: Context) {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         chatHistoryStore = AiChatHistoryStore(context)
@@ -109,21 +112,27 @@ object AiSettingsManager {
     private fun loadSessions(): List<ChatSessionMetadata> {
         val indexedSessions = chatHistoryStore.loadIndex()
         val legacyRaw = prefs.getString(KEY_CHAT_SESSIONS, null)
-
-        if (legacyRaw != null && indexedSessions.isEmpty()) {
-            val migrated = chatHistoryStore.importLegacySessions(legacyRaw)
+        if (legacyRaw != null) {
+            val existing = indexedSessions ?: chatHistoryStore.recoverIndex() ?: return emptyList()
+            val migrated = chatHistoryStore.importLegacySessions(legacyRaw, existing)
             if (migrated != null) {
-                prefs.edit { remove(KEY_CHAT_SESSIONS) }
+                // A failed preference write can be retried; importing again preserves file data.
+                if (!prefs.edit().remove(KEY_CHAT_SESSIONS).commit()) {
+                    Log.w(TAG, "Could not remove migrated chat preference")
+                }
                 return migrated
             }
-            return emptyList()
+            // Earlier sessions in an interrupted import may already have been published.
+            return chatHistoryStore.recoverIndex() ?: existing
         }
 
-        if (legacyRaw != null) {
-            prefs.edit { remove(KEY_CHAT_SESSIONS) }
-        }
-        chatHistoryStore.deleteSessionsNotIn(indexedSessions.map { it.id }.toSet())
-        return indexedSessions
+        return indexedSessions ?: chatHistoryStore.recoverIndex()?.also { recovered ->
+            try {
+                chatHistoryStore.saveIndex(recovered)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not persist recovered chat index", e)
+            }
+        }.orEmpty()
     }
 
     private fun saveSessions(sessions: List<ChatSessionMetadata>) {
@@ -135,8 +144,9 @@ object AiSettingsManager {
         return chatHistoryStore.loadSession(sessionId)
     }
 
+    @Synchronized
     fun saveSession(session: ChatSession) {
-        chatHistoryStore.saveSession(session)
+        if (!chatHistoryStore.saveSession(session)) return
         val metadata = ChatSessionMetadata(
             id = session.id,
             title = session.title,
@@ -152,6 +162,7 @@ object AiSettingsManager {
         saveSessions(sessions)
     }
 
+    @Synchronized
     fun deleteSession(sessionId: String) {
         chatHistoryStore.deleteSession(sessionId)
         saveSessions(_sessionsFlow.value.filter { it.id != sessionId })
@@ -210,34 +221,14 @@ object AiSettingsManager {
     const val DEFAULT_SYSTEM_PROMPT = """You are an expert reverse engineering agent named "r2auto" running inside the Android application R2Droid.
 You operate within a Radare2 environment via r2pipe. Your goal is to analyze the loaded binary based on the user's request.
 
-**Capabilities:**
-1. **Execute R2 Commands**: Wrap standard r2 commands in double brackets.
-   - Syntax: `[[cmd]]`
-   - Example: `[[aaa]]`, `[[pdf @ main]]`, `[[iI]]`
-
-2. **Execute JavaScript**: Python is not supported. Use JavaScript for data processing or complex logic.
-   - Syntax: Wrap code in `<js>` and `</js>` tags.
-   - The variable `r2` is available. Use `r2.cmd('cmd')` to run r2 commands. Use `console.log()` for output.
-   - Example:
-     <js>
-     var funcs = r2.cmd('afl').split('\n');
-     console.log('Found ' + funcs.length + ' functions');
-     </js>
-
-**Protocol:**
-1. **Think**: Analyze the current state.
-2. **Execute**: Output r2 commands or JavaScript blocks. They will be executed in order.
-3. **Wait**: After outputting commands, stop your response. The system will execute them and return the output.
-4. **Interact**: If you need user input or confirmation, output `[[ask]]` at the end.
-5. **Format**: Use Markdown for explanations. Be concise and professional.
-
-**Important:**
-- Respond [end] only after you have finished all analysis and given the user a final answer.
+**Guidelines:**
+- Answer in the user's language and use Markdown for clear, concise explanations.
+- Use the provided structured tools (`r2_command`, `run_js`, and `run_frida` when Frida mode is active) to inspect and analyze the target.
 - The `pdg` command is available for r2ghidra decompilation; fall back to `pdc` if it fails.
-- R2Droid may have already analyzed this binary. Always check the current state before running `aaa`.
-- Only use JavaScript when r2 commands alone are insufficient.
-- You are running on a resource-limited Android device; use shell commands with caution.
-- Rely solely on tool outputs."""
+- R2Droid may have already analyzed this binary. Check existing functions (`afl`) or metadata (`iI`) before running expensive analysis like `aaa`.
+- Prefer direct `r2_command` calls for single queries; use `run_js` (QuickJS with `r2.cmd()` / `console.log()`) for batch processing or complex parsing.
+- You are running on a resource-limited Android device; use heavy analysis or shell commands with caution.
+- Base your conclusions on actual tool outputs."""
 
     const val DEFAULT_INSTR_EXPLAIN_PROMPT =
         "You are a senior reverse engineer. Explain low-level assembly instructions accurately and concisely."

@@ -81,7 +81,7 @@ fun SwitchArchBottomSheet(
             ) {
                 ArchCard(
                     modifier = Modifier.weight(1f),
-                    title = "32位 ARM",
+                    title = stringResource(R.string.switch_arch_arm32),
                     icon = Icons.Filled.Smartphone,
                     commands = listOf("e asm.arch=arm", "e anal.arch=arm", "e asm.bits=32"),
                     onClick = applyArch,
@@ -90,9 +90,9 @@ fun SwitchArchBottomSheet(
                 )
                 ArchCard(
                     modifier = Modifier.weight(1f),
-                    title = "32位 ARM Thumb",
+                    title = stringResource(R.string.switch_arch_thumb32),
                     icon = Icons.Filled.Memory,
-                    commands = listOf("e anal.arch=arm", "e asm.bits=16"),
+                    commands = listOf("e asm.arch=arm", "e anal.arch=arm", "e asm.bits=16"),
                     onClick = applyArch,
                     isSwitching = isSwitching,
                     isSelected = false
@@ -107,7 +107,7 @@ fun SwitchArchBottomSheet(
             ) {
                 ArchCard(
                     modifier = Modifier.weight(1f),
-                    title = "64位 ARM",
+                    title = stringResource(R.string.switch_arch_arm64),
                     icon = Icons.Filled.Language,
                     commands = listOf("e asm.arch=arm", "e anal.arch=arm", "e asm.bits=64"),
                     onClick = applyArch,
@@ -116,7 +116,7 @@ fun SwitchArchBottomSheet(
                 )
                 ArchCard(
                     modifier = Modifier.weight(1f),
-                    title = "x64",
+                    title = stringResource(R.string.switch_arch_x64),
                     icon = Icons.Filled.Computer,
                     commands = listOf("e asm.arch=x86", "e asm.bits=64", "e asm.syntax=intel"),
                     onClick = applyArch,

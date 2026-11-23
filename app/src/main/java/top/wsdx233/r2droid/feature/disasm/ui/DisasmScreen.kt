@@ -1,6 +1,6 @@
 package top.wsdx233.r2droid.feature.disasm.ui
 
-import android.annotation.SuppressLint
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -32,23 +34,26 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import kotlinx.coroutines.launch
 import top.wsdx233.r2droid.core.ui.dialogs.CustomCommandDialog
-import top.wsdx233.r2droid.core.ui.dialogs.FunctionInfoDialog
-import top.wsdx233.r2droid.core.ui.dialogs.FunctionVariablesDialog
-import top.wsdx233.r2droid.core.ui.dialogs.FunctionXrefsDialog
 import top.wsdx233.r2droid.core.ui.dialogs.ModifyDialog
+import top.wsdx233.r2droid.core.ui.dialogs.canOpenPatchEditor
+import top.wsdx233.r2droid.core.ui.dialogs.requestByteEditor
 import top.wsdx233.r2droid.core.ui.dialogs.InstructionDetailDialog
 
 import androidx.compose.animation.AnimatedVisibility
@@ -82,23 +87,31 @@ import top.wsdx233.r2droid.util.R2PipeManager
  * - Custom fast scrollbar for quick navigation
  * - Placeholder shown for unloaded regions
  */
+import top.wsdx233.r2droid.core.data.model.DisasmInstruction
+import top.wsdx233.r2droid.core.data.model.formatCompactAddress
+import top.wsdx233.r2droid.feature.annotations.AnnotationAction
+import top.wsdx233.r2droid.feature.disasm.data.DisasmDataManager
+import top.wsdx233.r2droid.feature.disasm.DisasmViewModel
 import top.wsdx233.r2droid.feature.disasm.DisasmEvent
 
-@SuppressLint("FrequentlyChangingValue")
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DisassemblyViewer(
     viewModel: top.wsdx233.r2droid.feature.disasm.DisasmViewModel,
     cursorAddress: Long,
     scrollToSelectionTrigger: kotlinx.coroutines.flow.StateFlow<Int>,
     onInstructionClick: (Long) -> Unit,
+    onAnnotate: (AnnotationAction, Long) -> Unit,
     onNavigateToR2Frida: (() -> Unit)? = null
 ) {
-    val disasmDataManager = viewModel.disasmDataManager
+    val managerState by viewModel.disasmDataManagerState.collectAsState()
+    val disasmDataManager = managerState
     val cacheVersion by viewModel.disasmCacheVersion.collectAsState()
     val multiSelectState by viewModel.multiSelectState.collectAsState()
     val breakpoints by viewModel.breakpoints.collectAsState()
     val pcAddress by viewModel.pcAddress.collectAsState()
     val debugStatus by viewModel.debugStatus.collectAsState()
+    val debugStopReason by viewModel.debugStopReason.collectAsState()
     val debugError by viewModel.debugError.collectAsState()
     val registers by viewModel.registers.collectAsState()
     val debugStackState by viewModel.debugStackState.collectAsState()
@@ -134,16 +147,20 @@ fun DisassemblyViewer(
     var menuTapOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     var menuRowHeight by remember { mutableIntStateOf(0) }
 
+    val functionActions = remember(viewModel) { viewModel.functionMenuActions() }
+
     var showModifyDialog by remember { mutableStateOf(false) }
+    var modifySession by remember { mutableStateOf<R2PipeManager.R2Session?>(null) }
     var modifyType by remember { mutableStateOf("hex") } // hex, string, asm
     var modifyInitialValue by remember { mutableStateOf<String?>("") }
     var showCustomCommandDialog by remember { mutableStateOf(false) }
 
     // Reopen in write mode dialog
     var showReopenDialog by remember { mutableStateOf(false) }
-    var pendingWriteAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingWriteAction by remember { mutableStateOf<(suspend () -> Unit)?>(null) }
 
     val clipboardManager = LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
     
     if (disasmDataManager == null) {
@@ -156,7 +173,8 @@ fun DisassemblyViewer(
     // Capture a single consistent snapshot to avoid race conditions in key/content lambdas.
     // Reading the volatile allInstructions multiple times during a layout pass can cause
     // duplicate keys if mergeInstructions swaps the list between reads.
-    val instructionSnapshot = remember(cacheVersion) { disasmDataManager.getSnapshot() }
+    val dataSnapshot = remember(disasmDataManager, cacheVersion) { disasmDataManager.getDataSnapshot() }
+    val instructionSnapshot = dataSnapshot.instructions
     val loadedCount = instructionSnapshot.size
 
     if (loadedCount <= 0) {
@@ -169,29 +187,27 @@ fun DisassemblyViewer(
         }
         return
     }
-    // Virtual address range for scrollbar calculation
-    val viewStartAddr = remember { disasmDataManager.viewStartAddress }
-    val viewEndAddr = remember { disasmDataManager.viewEndAddress }
-    val totalAddressRange = viewEndAddr - viewStartAddr
-    
     // Calculate initial scroll position based on cursor
-    val initialIndex = remember(cursorAddress) {
+    val initialIndex = remember(disasmDataManager, cursorAddress) {
         disasmDataManager.findClosestIndex(cursorAddress).coerceAtLeast(0)
     }
     
     val listState = rememberLazyListState(
+        // Prepare a few measured rows in the direction of travel, not a whole data chunk.
+        cacheWindow = remember { LazyLayoutCacheWindow(aheadFraction = 0.5f, behindFraction = 0.25f) },
         initialFirstVisibleItemIndex = initialIndex.coerceIn(0, maxOf(0, loadedCount - 1))
     )
     
-    // Coroutine scope for scrollbar interactions
     val coroutineScope = rememberCoroutineScope()
+    var isScrollbarDragging by remember(disasmDataManager) { mutableStateOf(false) }
+    val isScrollbarSeeking by viewModel.isScrollbarSeeking.collectAsState()
     
     // Track previous cursor address to only scroll when it actually changes
-    var previousCursorAddress by remember { mutableLongStateOf(cursorAddress) }
-    var hasInitiallyScrolled by remember { mutableStateOf(false) }
+    var previousCursorAddress by remember(disasmDataManager) { mutableLongStateOf(cursorAddress) }
+    var hasInitiallyScrolled by remember(disasmDataManager) { mutableStateOf(false) }
     
     // Auto-scroll to cursor ONLY when cursorAddress changes (not on data load)
-    LaunchedEffect(cursorAddress) {
+    LaunchedEffect(disasmDataManager, cursorAddress) {
         // Skip if this is just the initial composition with same address
         if (hasInitiallyScrolled && cursorAddress == previousCursorAddress) {
             return@LaunchedEffect
@@ -212,79 +228,64 @@ fun DisassemblyViewer(
         }
     }
     
-    // Observe scroll target from ViewModel - scrolls after data is loaded
+    // Navigation targets are resolved against the same immutable snapshot used by LazyColumn.
     val scrollTarget by viewModel.scrollTarget.collectAsState()
-    LaunchedEffect(scrollTarget) {
+    LaunchedEffect(listState, scrollTarget, instructionSnapshot) {
         val target = scrollTarget ?: return@LaunchedEffect
-        val (targetAddr, targetIndex) = target
-        if (targetIndex >= 0 && loadedCount > 0) {
-            val clampedIndex = targetIndex.coerceIn(0, loadedCount - 1)
-            // Check if target is already visible on screen
-            val visibleItem = listState.layoutInfo.visibleItemsInfo
-                .firstOrNull { it.index == clampedIndex }
-            if (visibleItem != null) {
-                // Already visible: smooth scroll to center from current position
-                val viewportHeight = listState.layoutInfo.viewportEndOffset -
-                        listState.layoutInfo.viewportStartOffset
-                val desiredOffset = (viewportHeight - visibleItem.size) / 2
-                val delta = visibleItem.offset - desiredOffset
-                if (kotlin.math.abs(delta) > 1) {
-                    listState.animateScrollBy(delta.toFloat())
-                }
+        val index = if (target.animate) DisasmDataManager.findClosestIndex(instructionSnapshot, target.address)
+            else DisasmDataManager.coveredIndex(instructionSnapshot, target.address)
+        // Cache and target flows can be collected in either order. Never acknowledge a target
+        // against an old window, or briefly expose the old rows beneath the placeholder.
+        if (index < 0) return@LaunchedEffect
+        if (index >= 0) {
+            if (!target.animate) {
+                // Scrollbar commits must not fight the finger with a centering animation.
+                listState.scrollToItem(index)
             } else {
-                // Not visible: jump first, then center after layout updates
-                listState.scrollToItem(clampedIndex)
-                // Wait for the next frame to ensure layout is updated
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    kotlinx.coroutines.delay(50) // Give time for layout to settle
-                    val layoutInfo = listState.layoutInfo
-                    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
-                    val targetItemInfo = layoutInfo.visibleItemsInfo
-                        .firstOrNull { it.index == clampedIndex }
-                    if (targetItemInfo != null && viewportHeight > 0) {
-                        val centerOffset = (viewportHeight - targetItemInfo.size) / 2
-                        val currentOffset = targetItemInfo.offset
-                        if (centerOffset > 0 && kotlin.math.abs(currentOffset - centerOffset) > 1) {
-                            listState.animateScrollBy((currentOffset - centerOffset).toFloat())
-                        }
-                    }
+                if (listState.layoutInfo.visibleItemsInfo.none { it.index == index }) {
+                    listState.scrollToItem(index)
+                }
+                val layout = listState.layoutInfo
+                val item = layout.visibleItemsInfo.firstOrNull { it.index == index }
+                if (item != null) {
+                    val center = (layout.viewportEndOffset + layout.viewportStartOffset - item.size) / 2
+                    val delta = item.offset - center
+                    if (kotlin.math.abs(delta) > 1) listState.animateScrollBy(delta.toFloat())
                 }
             }
         }
-        viewModel.clearScrollTarget()
+        viewModel.clearScrollTarget(target)
     }
 
-    // Load more when near edges - use snapshotFlow for better control
-    LaunchedEffect(listState) {
+    // Emit only when an edge/window changes, not for every row or scroll pixel. Start early
+    // enough to hide R2 latency, and suspend edge loading during scrollbar previews/commits.
+    LaunchedEffect(listState, instructionSnapshot, isScrollbarDragging, isScrollbarSeeking, scrollTarget) {
+        if (isScrollbarDragging || isScrollbarSeeking || scrollTarget != null) return@LaunchedEffect
         snapshotFlow {
-            Triple(
-                listState.firstVisibleItemIndex,
-                listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0,
-                disasmDataManager.loadedInstructionCount
-            )
-        }.collect { (firstVisible, lastVisible, total) ->
-            // Preload around visible area
-            val currentInstr = disasmDataManager.getInstructionAt(firstVisible)
-            if (currentInstr != null) {
-                viewModel.onEvent(DisasmEvent.Preload(currentInstr.addr))
+            val layout = listState.layoutInfo
+            val first = layout.visibleItemsInfo.firstOrNull()?.index
+            val last = layout.visibleItemsInfo.lastOrNull()?.index
+            val before = instructionSnapshot.firstOrNull()?.addr?.takeIf {
+                first != null && first < 30 && it > disasmDataManager.viewStartAddress
             }
-            
-            // Load more at top
-            if (firstVisible in 1..<10) {
-                viewModel.onEvent(DisasmEvent.LoadMore(false))
+            val after = instructionSnapshot.lastOrNull()?.let { instr ->
+                (instr.addr + instr.size.coerceAtLeast(1)).takeIf {
+                    last != null && last >= instructionSnapshot.size - 30 && it < disasmDataManager.viewEndAddress
+                }
             }
-            
-            // Load more at bottom
-            if (total > 0 && lastVisible > total - 10) {
-                viewModel.onEvent(DisasmEvent.LoadMore(true))
-            }
+            before to after
+        }.collect { (before, after) ->
+            if (before != null) viewModel.onEvent(DisasmEvent.LoadMore(false))
+            if (after != null) viewModel.onEvent(DisasmEvent.LoadMore(true))
         }
     }
-    
+
     Box(Modifier.fillMaxSize()) {
         // Jump maps are pre-computed in DisasmDataManager on background thread
-        val jumpToIndex = remember(cacheVersion) { disasmDataManager.jumpToIndexMap }
-        val targetToIndex = remember(cacheVersion) { disasmDataManager.targetToIndexMap }
+        val jumpToIndex = dataSnapshot.jumpToIndex
+        val targetToIndex = dataSnapshot.targetToIndex
+        val normalStyle = rememberDisasmRowStyle(selected = false)
+        val selectedStyle = rememberDisasmRowStyle(selected = true)
         
         LazyColumn(
             state = listState,
@@ -297,8 +298,9 @@ fun DisassemblyViewer(
             items(
                 count = loadedCount,
                 key = { index ->
-                    instructionSnapshot.getOrNull(index)?.addr ?: -(index.toLong() + 1)
-                }
+                    instructionSnapshot[index].addr
+                },
+                contentType = { "instruction" }
             ) { index ->
                 // Use the captured snapshot for consistent reads
                 val instr = instructionSnapshot.getOrNull(index)
@@ -312,7 +314,7 @@ fun DisassemblyViewer(
                     
                     DisasmRow(
                         instr = instr,
-                        isSelected = instr.addr == cursorAddress,
+                        style = if (instr.addr == cursorAddress) selectedStyle else normalStyle,
                         isMultiSelected = multiSelectState.contains(instr.addr),
                         isPC = instr.addr == pcAddress,
                         isBreakpoint = breakpoints.contains(instr.addr),
@@ -343,8 +345,9 @@ fun DisassemblyViewer(
                                     clipboardManager.setText(AnnotatedString(text))
                                     showMenu = false
                                 },
-                                onModify = { type ->
+                                onModify = edit@{ type ->
                                     showMenu = false
+                                    if (!context.canOpenPatchEditor()) return@edit
                                     val capturedOpcode = instr.opcode
                                     if (type == "comment") {
                                         modifyType = type
@@ -352,11 +355,11 @@ fun DisassemblyViewer(
                                         showModifyDialog = true
                                     } else {
                                         coroutineScope.launch {
-                                            val isWritable = try {
-                                                val ijResult = top.wsdx233.r2droid.util.R2PipeManager.execute("ij").getOrDefault("{}")
-                                                org.json.JSONObject(ijResult).getJSONObject("core").getBoolean("iorw")
-                                            } catch (_: Exception) { false }
-                                            if (isWritable) {
+                                            context.requestByteEditor(onReopen = {
+                                                pendingWriteAction = it
+                                                showReopenDialog = true
+                                            }) {
+                                                modifySession = it
                                                 modifyType = type
                                                 showModifyDialog = true
                                                 modifyInitialValue = when (type) {
@@ -365,18 +368,6 @@ fun DisassemblyViewer(
                                                     "string" -> null
                                                     else -> ""
                                                 }
-                                            } else {
-                                                pendingWriteAction = {
-                                                    modifyType = type
-                                                    showModifyDialog = true
-                                                    modifyInitialValue = when (type) {
-                                                        "asm" -> capturedOpcode
-                                                        "hex" -> ""
-                                                        "string" -> null
-                                                        else -> ""
-                                                    }
-                                                }
-                                                showReopenDialog = true
                                             }
                                         }
                                     }
@@ -389,22 +380,8 @@ fun DisassemblyViewer(
                                     showCustomCommandDialog = true
                                     showMenu = false
                                 },
-                                onAnalyzeFunction = {
-                                    viewModel.onEvent(DisasmEvent.AnalyzeFunction(instr.addr))
-                                    showMenu = false
-                                },
-                                onFunctionInfo = {
-                                    viewModel.onEvent(DisasmEvent.FetchFunctionInfo(instr.addr))
-                                    showMenu = false
-                                },
-                                onFunctionXrefs = {
-                                    viewModel.onEvent(DisasmEvent.FetchFunctionXrefs(instr.addr))
-                                    showMenu = false
-                                },
-                                onFunctionVariables = {
-                                    viewModel.onEvent(DisasmEvent.FetchFunctionVariables(instr.addr))
-                                    showMenu = false
-                                },
+                                functionActions = functionActions,
+                                onAnnotate = onAnnotate,
                                 onInstructionDetail = {
                                     viewModel.onEvent(DisasmEvent.FetchInstructionDetail(instr.addr))
                                     showMenu = false
@@ -439,90 +416,84 @@ fun DisassemblyViewer(
                     )
                 } else {
                     // Placeholder row
-                    DisasmPlaceholderRow()
+                    DisasmPlaceholderRow(rowIndex = index)
                 }
             }
         }
         
-        // Current address for scrollbar and footer display
-        val currentIndex = listState.firstVisibleItemIndex
-        val currentAddr = remember(cacheVersion, currentIndex) {
-            disasmDataManager.getAddressAt(currentIndex) ?: 0L
-        }
-        
-        // Auto-hiding Fast Scrollbar
-        AutoHideAddressScrollbar(
+        DisasmScrollbarPreviewLayer(
+            previewState = viewModel.scrollbarPreview,
+            instructions = instructionSnapshot,
             listState = listState,
-            totalItems = loadedCount,
-            viewStartAddress = viewStartAddr,
-            viewEndAddress = viewEndAddr,
-            currentAddress = currentAddr,
-            modifier = Modifier.align(Alignment.CenterEnd),
-            alwaysShow = true,
-            onScrollToAddress = { targetAddr ->
-                // During drag: only do immediate scroll within loaded data, no loading
-//                val immediateIndex = disasmDataManager.estimateIndexForAddress(targetAddr)
-//                val clampedIndex = immediateIndex.coerceIn(0, maxOf(0, disasmDataManager.loadedInstructionCount - 1))
-//                coroutineScope.launch {
-//                    listState.scrollToItem(clampedIndex)
-//                }
-                viewModel.scrollbarJumpTo(targetAddr)
-            },
-            onDragComplete = { targetAddr ->
-                // On drag end / tap: treat as a full jump — reset data to avoid address gaps
-                viewModel.scrollbarJumpTo(targetAddr)
-            }
+            onRetry = viewModel::retryScrollbarPreview,
+            onDismiss = viewModel::dismissScrollbarPreview
         )
-        
-        // Footer: Position Info
-        Row(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Addr: ${"0x%X".format(currentAddr)}", 
-                    fontSize = 12.sp, 
-                    fontFamily = LocalAppFont.current
+
+        // Measure the existing footer first; the scrollbar gets exactly the remaining height.
+        Column(Modifier.matchParentSize()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = AbsoluteAlignment.CenterRight) {
+                DisasmAddressScrollbar(
+                    listState = listState,
+                    instructions = instructionSnapshot,
+                    manager = disasmDataManager,
+                    previewState = viewModel.scrollbarPreview,
+                    onPreview = viewModel::previewScrollbarAddress,
+                    onCommit = viewModel::scrollbarJumpTo,
+                    isSeeking = isScrollbarSeeking,
+                    onDragStateChange = {
+                        isScrollbarDragging = it
+                        viewModel.onScrollbarDragStateChange(it)
+                    }
                 )
-                if (debugStatus != top.wsdx233.r2droid.feature.disasm.DebugStatus.IDLE && pcAddress != null) {
+            }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    DisasmCurrentAddress(listState, instructionSnapshot, viewModel, isScrollbarDragging)
+                    if (debugStatus != top.wsdx233.r2droid.feature.disasm.DebugStatus.IDLE && pcAddress != null) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        AssistChip(
+                            onClick = { pcAddress?.let(onInstructionClick) },
+                            label = {
+                                Text(
+                                    stringResource(R.string.debug_footer_next_pc, "0x%X".format(pcAddress)),
+                                    fontSize = 11.sp,
+                                    fontFamily = LocalAppFont.current,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        )
+                    }
                     Spacer(modifier = Modifier.width(8.dp))
-                    AssistChip(
-                        onClick = { pcAddress?.let(onInstructionClick) },
-                        label = {
-                            Text(
-                                stringResource(R.string.debug_footer_next_pc, "0x%X".format(pcAddress)),
-                                fontSize = 11.sp,
-                                fontFamily = LocalAppFont.current
-                            )
+                    Text(
+                        "Loaded: $loadedCount instrs",
+                        fontSize = 12.sp,
+                        fontFamily = LocalAppFont.current,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(
+                    onClick = { showDebugControls = !showDebugControls },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BugReport,
+                        contentDescription = "Toggle Debug Controls",
+                        tint = if (showDebugControls || debugStatus != top.wsdx233.r2droid.feature.disasm.DebugStatus.IDLE) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         }
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    "Loaded: $loadedCount instrs", 
-                    fontSize = 12.sp, 
-                    fontFamily = LocalAppFont.current
-                )
-            }
-            IconButton(
-                onClick = { showDebugControls = !showDebugControls },
-                modifier = Modifier.size(24.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.BugReport,
-                    contentDescription = "Toggle Debug Controls",
-                    tint = if (showDebugControls || debugStatus != top.wsdx233.r2droid.feature.disasm.DebugStatus.IDLE) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
             }
         }
         
@@ -569,12 +540,18 @@ fun DisassemblyViewer(
                     initialValue = modifyInitialValue!!,
                     onDismiss = { showModifyDialog = false; modifyInitialValue = "" },
                     onConfirm = { value ->
-                         when(modifyType) {
-                            "hex" -> viewModel.onEvent(DisasmEvent.WriteHex(menuTargetAddress!!, value))
-                            "string" -> viewModel.onEvent(DisasmEvent.WriteString(menuTargetAddress!!, value))
-                            "asm" -> viewModel.onEvent(DisasmEvent.WriteAsm(menuTargetAddress!!, value))
-                            "comment" -> viewModel.onEvent(DisasmEvent.WriteComment(menuTargetAddress!!, value))
-                         }
+                        val address = menuTargetAddress!!
+                        if (modifyType == "comment") {
+                            viewModel.onEvent(DisasmEvent.WriteComment(address, value))
+                        } else {
+                            modifySession?.let { session ->
+                                when (modifyType) {
+                                    "hex" -> viewModel.onEvent(DisasmEvent.WriteHex(session, address, value))
+                                    "string" -> viewModel.onEvent(DisasmEvent.WriteString(session, address, value))
+                                    "asm" -> viewModel.onEvent(DisasmEvent.WriteAsm(session, address, value))
+                                }
+                            }
+                        }
                     }
                 )
             } else {
@@ -609,7 +586,6 @@ fun DisassemblyViewer(
                         val action = pendingWriteAction
                         pendingWriteAction = null
                         coroutineScope.launch {
-                            top.wsdx233.r2droid.util.R2PipeManager.execute("oo+")
                             action?.invoke()
                         }
                     }) {
@@ -629,53 +605,6 @@ fun DisassemblyViewer(
             CustomCommandDialog(
                 onDismiss = { showCustomCommandDialog = false },
                 onConfirm = { /* handled internally */ }
-            )
-        }
-
-        // Function Info Dialog
-        val functionInfoState by viewModel.functionInfoState.collectAsState()
-        if (functionInfoState.visible) {
-            FunctionInfoDialog(
-                functionInfo = functionInfoState.data,
-                isLoading = functionInfoState.isLoading,
-                targetAddress = functionInfoState.targetAddress,
-                onDismiss = { viewModel.onEvent(DisasmEvent.DismissFunctionInfo) },
-                onRename = { newName ->
-                    viewModel.onEvent(
-                        DisasmEvent.RenameFunctionFromInfo(functionInfoState.targetAddress, newName)
-                    )
-                },
-                onJump = { addr -> onInstructionClick(addr) }
-            )
-        }
-
-        // Function Xrefs Dialog
-        val functionXrefsState by viewModel.functionXrefsState.collectAsState()
-        if (functionXrefsState.visible) {
-            FunctionXrefsDialog(
-                xrefs = functionXrefsState.data,
-                isLoading = functionXrefsState.isLoading,
-                targetAddress = functionXrefsState.targetAddress,
-                onDismiss = { viewModel.onEvent(DisasmEvent.DismissFunctionXrefs) },
-                onJump = { addr -> onInstructionClick(addr) }
-            )
-        }
-
-        // Function Variables Dialog
-        val functionVariablesState by viewModel.functionVariablesState.collectAsState()
-        if (functionVariablesState.visible) {
-            FunctionVariablesDialog(
-                variables = functionVariablesState.data,
-                isLoading = functionVariablesState.isLoading,
-                targetAddress = functionVariablesState.targetAddress,
-                onDismiss = { viewModel.onEvent(DisasmEvent.DismissFunctionVariables) },
-                onRename = { oldName, newName ->
-                    viewModel.onEvent(
-                        DisasmEvent.RenameFunctionVariable(
-                            functionVariablesState.targetAddress, oldName, newName
-                        )
-                    )
-                }
             )
         }
 
@@ -762,6 +691,7 @@ fun DisassemblyViewer(
                 debugStatus = debugStatus,
                 debugBackend = debugBackend,
                 pcAddress = pcAddress,
+                stopReason = debugStopReason,
                 registers = registers,
                 breakpoints = breakpoints,
                 stackEntries = debugStackState.entries,
@@ -951,4 +881,96 @@ fun DisassemblyViewer(
             )
         }
     }
+}
+
+/** Isolate frequently changing list reads from the large viewer/menu/debug composition. */
+@Composable
+private fun DisasmCurrentAddress(
+    listState: LazyListState,
+    instructions: List<DisasmInstruction>,
+    viewModel: DisasmViewModel,
+    isDragging: Boolean
+) {
+    // While dragging, the bubble owns the target address; the footer still describes the list.
+    val preview = if (isDragging) null else viewModel.scrollbarPreview.collectAsState().value
+    val hex = preview?.let { formatCompactAddress(it.address) }
+        ?: instructions.getOrNull(listState.firstVisibleItemIndex)?.displayAddress ?: "0"
+    Text(
+        "Addr: 0x$hex",
+        fontSize = 12.sp,
+        fontFamily = LocalAppFont.current,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
+}
+
+@Composable
+internal fun DisasmAddressScrollbar(
+    listState: LazyListState,
+    instructions: List<DisasmInstruction>,
+    manager: DisasmDataManager,
+    previewState: kotlinx.coroutines.flow.StateFlow<top.wsdx233.r2droid.feature.disasm.DisasmScrollbarPreview?>,
+    onPreview: (Long) -> Unit,
+    onCommit: (Long) -> Unit,
+    isSeeking: Boolean,
+    onDragStateChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val currentInstructions by rememberUpdatedState(instructions)
+    var dragging by remember(manager) { mutableStateOf(false) }
+    val thumbCenter = remember(manager) { mutableFloatStateOf(0f) }
+    val previewBands = remember(manager) {
+        lazy(LazyThreadSafetyMode.NONE) {
+            manager.addressOverview.rasterize(manager.viewStartAddress, manager.viewEndAddress, PREVIEW_ROWS)
+        }
+    }
+    // This is only bookkeeping for pointer callbacks, not observable UI state.
+    val lastPreviewIndex = remember(listState) { intArrayOf(-1) }
+    // A dwell load (or a distant LRU hit) can replace/prepend the window while the finger is still
+    // down. Re-resolve the latest address against exactly the snapshot used by LazyColumn.
+    LaunchedEffect(listState, instructions) {
+        lastPreviewIndex[0] = -1
+        val address = previewState.value?.address ?: return@LaunchedEffect
+        val index = DisasmDataManager.coveredIndex(instructions, address)
+        if (index >= 0) {
+            lastPreviewIndex[0] = index
+            listState.requestScrollToItem(index)
+        }
+    }
+    if (dragging) {
+        DisasmDragBubble(previewState, manager, instructions, previewBands.value, thumbCenter)
+    }
+    AutoHideAddressScrollbar(
+        listState = listState,
+        totalItems = instructions.size,
+        viewStartAddress = manager.viewStartAddress,
+        viewEndAddress = manager.viewEndAddress,
+        currentAddress = { instructions.getOrNull(listState.firstVisibleItemIndex)?.addr ?: manager.viewStartAddress },
+        modifier = modifier,
+        alwaysShow = true,
+        isSeeking = isSeeking,
+        thumbWidth = DisasmThumbWidth,
+        overview = manager.addressOverview,
+        onDragThumbCenter = { thumbCenter.floatValue = it },
+        onScrollToAddress = { address ->
+            onPreview(address)
+            val index = DisasmDataManager.coveredIndex(currentInstructions, address)
+            if (index >= 0 && index != lastPreviewIndex[0]) {
+                lastPreviewIndex[0] = index
+                // Latest request wins at the next remeasure; no coroutine queue or synchronous
+                // remeasure for each pointer event. R2 I/O is separately dwell-debounced.
+                listState.requestScrollToItem(index)
+            }
+        },
+        onDragComplete = onCommit,
+        onDragStateChange = {
+            dragging = it
+            lastPreviewIndex[0] = -1
+            if (it) {
+                // Stop an existing list fling even when the first preview is a cache miss.
+                listState.requestScrollToItem(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+            }
+            onDragStateChange(it)
+        }
+    )
 }

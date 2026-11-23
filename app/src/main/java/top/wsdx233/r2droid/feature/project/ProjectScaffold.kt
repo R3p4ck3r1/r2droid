@@ -1,10 +1,14 @@
 package top.wsdx233.r2droid.feature.project
 
 import android.content.Context
+import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -39,6 +43,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DataObject
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Extension
@@ -54,6 +59,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -82,10 +89,12 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -95,6 +104,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -102,6 +112,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -110,6 +121,7 @@ import coil.compose.AsyncImage
 import coil.decode.SvgDecoder
 import coil.request.ImageRequest
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import top.wsdx233.r2droid.R
 import top.wsdx233.r2droid.core.data.prefs.SettingsManager
@@ -125,15 +137,26 @@ import top.wsdx233.r2droid.core.ui.dialogs.JumpDialog
 import top.wsdx233.r2droid.core.ui.dialogs.XrefsDialog
 import top.wsdx233.r2droid.feature.ai.AiViewModel
 import top.wsdx233.r2droid.feature.ai.ui.AiChatScreen
+import top.wsdx233.r2droid.feature.ai.ui.AiChatTopBarState
+import top.wsdx233.r2droid.feature.ai.ui.AiChatTopBarSubtitle
 import top.wsdx233.r2droid.feature.ai.ui.AiPromptsScreen
 import top.wsdx233.r2droid.feature.ai.ui.AiProviderSettingsScreen
+import top.wsdx233.r2droid.feature.annotations.AnnotationAction
+import top.wsdx233.r2droid.feature.annotations.AnnotationEditor
+import top.wsdx233.r2droid.feature.annotations.AnnotationRequest
+import top.wsdx233.r2droid.feature.annotations.AnnotationSession
+import top.wsdx233.r2droid.feature.annotations.AnnotationIndex
 import top.wsdx233.r2droid.feature.disasm.DisasmEvent
 import top.wsdx233.r2droid.feature.disasm.DisasmViewModel
 import top.wsdx233.r2droid.feature.hex.HexEvent
 import top.wsdx233.r2droid.feature.hex.HexViewModel
+import top.wsdx233.r2droid.feature.project.patches.PatchesScreen
 import top.wsdx233.r2droid.feature.r2frida.R2FridaViewModel
 import top.wsdx233.r2droid.feature.r2frida.data.*
 import top.wsdx233.r2droid.feature.r2frida.ui.*
+import top.wsdx233.r2droid.feature.r2flutter.R2FlutterViewModel
+import top.wsdx233.r2droid.feature.r2flutter.data.FlutterTargetStatus
+import top.wsdx233.r2droid.feature.r2flutter.ui.R2FlutterProjectScreen
 import top.wsdx233.r2droid.feature.terminal.ui.CommandScreen
 import top.wsdx233.r2droid.feature.tutorial.OnboardingTutorial
 import top.wsdx233.r2droid.feature.tutorial.TutorialOverlay
@@ -148,6 +171,7 @@ import top.wsdx233.r2droid.util.R2PipeManager
 enum class MainCategory(@StringRes val titleRes: Int, val icon: ImageVector) {
     List(R.string.proj_category_list, Icons.AutoMirrored.Filled.List),
     Detail(R.string.proj_category_detail, Icons.Filled.Info),
+    R2Flutter(R.string.proj_category_r2flutter, Icons.Filled.DataObject),
     R2Frida(R.string.proj_category_r2frida, Icons.Filled.BugReport),
     Project(R.string.proj_category_project, Icons.Filled.Build),
     AI(R.string.proj_category_ai, Icons.Filled.SmartToy)
@@ -164,26 +188,50 @@ fun ProjectScaffold(
     disasmViewModel: DisasmViewModel = hiltViewModel(key = "disasm-$sessionId"),
     aiViewModel: AiViewModel = hiltViewModel(key = "ai-$sessionId"),
     r2fridaViewModel: R2FridaViewModel = hiltViewModel(key = "frida-$sessionId"),
+    r2flutterViewModel: R2FlutterViewModel = hiltViewModel(key = "flutter-$sessionId"),
     onOpenDrawer: () -> Unit = {},
-    onNavigateBack: () -> Unit
+    onReconnect: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val projectPipe = (uiState as? ProjectUiState.Success)?.sessionToken
+    var annotation by remember(projectPipe) { mutableStateOf<AnnotationRequest?>(null) }
+    val onAnnotate: (AnnotationAction, Long) -> Unit = remember(projectPipe) {
+        { action, address ->
+            val session = projectPipe?.let { AnnotationSession.capture(it) }
+            if (session != null) annotation = AnnotationRequest(session, action, address)
+            else Toast.makeText(context, R.string.proj_session_disconnected, Toast.LENGTH_SHORT).show()
+        }
+    }
+    annotation?.let { request ->
+        key(request) {
+            AnnotationEditor(request, onDismiss = { annotation = null }, onApplied = {
+                annotation = null
+                if (projectPipe === R2PipeManager.activeSessionPipe) {
+                    viewModel.invalidateBinaryViews()
+                    if (request.action == AnnotationAction.DELETE_FUNCTION || request.action == AnnotationAction.RESIZE_FUNCTION) {
+                        viewModel.onEvent(ProjectEvent.ClearFunctionsCache)
+                    }
+                }
+            })
+        }
+    }
     
     // Global invalidation listener
     val globalInvalidation by viewModel.globalDataInvalidated.collectAsState()
     androidx.compose.runtime.LaunchedEffect(globalInvalidation) {
         if (globalInvalidation > 0) {
             hexViewModel.onEvent(HexEvent.RefreshData)
-            disasmViewModel.onEvent(DisasmEvent.RefreshData)
+            disasmViewModel.refreshData((uiState as? ProjectUiState.Success)?.cursorAddress)
         }
     }
 
-    // Refresh function list when disasm data is modified (e.g. function rename)
+    // Refresh function list and decompilation when disasm/function metadata is modified
     val dataModified by disasmViewModel.dataModifiedEvent.collectAsState()
     androidx.compose.runtime.LaunchedEffect(dataModified) {
         if (dataModified > 0) {
             viewModel.onEvent(ProjectEvent.ClearFunctionsCache)
+            viewModel.invalidateDecompilationAndGraph()
         }
     }
 
@@ -211,9 +259,24 @@ fun ProjectScaffold(
     var showJumpDialog by remember { mutableStateOf(false) }
     val visitedAddresses = remember { mutableStateListOf<Long>() }
     val isR2Frida = R2PipeManager.isR2FridaSession
+    val r2FlutterTargetStatus by r2flutterViewModel.targetStatus.collectAsState()
+    val isR2Flutter = r2FlutterTargetStatus == FlutterTargetStatus.AVAILABLE
     val isAiEnabled = SettingsManager.aiEnabled
     val isWide = LocalWindowWidthClass.current != WindowWidthClass.Compact
     val tutorialState by OnboardingTutorial.state.collectAsState()
+
+    androidx.compose.runtime.LaunchedEffect(r2FlutterTargetStatus) {
+        if (r2FlutterTargetStatus == FlutterTargetStatus.CHECKING) return@LaunchedEffect
+        if (R2PipeManager.pendingOpenR2Flutter) {
+            if (isR2Flutter) {
+                selectBuiltinCategory(MainCategory.R2Flutter)
+            }
+            R2PipeManager.pendingOpenR2Flutter = false
+        }
+        if (!isR2Flutter && selectedCategory == MainCategory.R2Flutter) {
+            selectBuiltinCategory(MainCategory.List)
+        }
+    }
 
     androidx.activity.compose.BackHandler(enabled = tutorialState.active) {
         OnboardingTutorial.skip()
@@ -261,7 +324,7 @@ fun ProjectScaffold(
         when (step.target.area) {
             OnboardingTutorial.Area.List -> {
                 selectBuiltinCategory(MainCategory.List)
-                selectedListTabIndex = step.target.tabIndex.coerceIn(0, 8)
+                selectedListTabIndex = step.target.tabIndex.coerceIn(0, AnnotationIndex.LAST_TAB + 1)
             }
             OnboardingTutorial.Area.Detail -> {
                 selectBuiltinCategory(MainCategory.Detail)
@@ -290,19 +353,18 @@ fun ProjectScaffold(
         }
     }
 
-    // R2Pipe busy state for progress indicator
-    val r2State by R2PipeManager.state.collectAsState()
+    // Paging issues short R2 commands. Observe them in the effect, not in the scaffold's
+    // composition: quick reads should never invalidate the project tabs or viewer.
     var showBusy by remember { mutableStateOf(false) }
     var busyCommand by remember { mutableStateOf("") }
 
-    androidx.compose.runtime.LaunchedEffect(r2State) {
-        when (val s = r2State) {
-            is R2PipeManager.State.Executing -> {
-                busyCommand = s.command
-                delay(300)
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        R2PipeManager.state.collectLatest { state ->
+            if (state is R2PipeManager.State.Executing) {
+                if (!showBusy) delay(300)
+                busyCommand = state.command
                 showBusy = true
-            }
-            else -> {
+            } else {
                 showBusy = false
             }
         }
@@ -313,10 +375,11 @@ fun ProjectScaffold(
         viewModel.currentDetailTab = selectedDetailTabIndex
     }
 
+    val typesTabIndex = AnnotationIndex.LAST_TAB + 1
     val baseListTabs = listOf(
         R.string.proj_tab_overview, R.string.proj_tab_search, R.string.proj_tab_sections, R.string.proj_tab_symbols,
         R.string.proj_tab_exports, R.string.proj_tab_imports, R.string.proj_tab_relocs, R.string.proj_tab_strings, R.string.proj_tab_functions
-    )
+    ) + AnnotationIndex.entries.map { it.title } + listOf(R.string.proj_tab_types)
     val pluginListTabs by rememberPluginTabsForTarget("list")
     val listTabTitles = buildList {
         addAll(baseListTabs.map { stringResource(it) })
@@ -334,7 +397,14 @@ fun ProjectScaffold(
         addAll(baseDetailTabs)
         addAll(pluginDetailTabs.map { -1 })
     }
-    val baseProjectTabs = listOf(R.string.proj_tab_settings, R.string.proj_tab_cmd, R.string.proj_tab_logs)
+    val sessions by R2PipeManager.sessions.collectAsState()
+    val cacheSession = sessions[sessionId]?.takeIf { it.writeCacheEnabled }
+    val baseProjectTabs = buildList {
+        add(R.string.proj_tab_settings)
+        add(R.string.proj_tab_cmd)
+        add(R.string.proj_tab_logs)
+        if (cacheSession != null) add(R.string.proj_tab_patches)
+    }
     val pluginProjectTabs by PluginManager.projectTabs.collectAsState()
     val pluginProjectActions by PluginManager.projectActions.collectAsState()
     val projectTabs = buildList {
@@ -456,7 +526,7 @@ fun ProjectScaffold(
                 baseKeys = listOf(
                     "list.overview", "list.search", "list.sections", "list.symbols",
                     "list.exports", "list.imports", "list.relocations", "list.strings", "list.functions"
-                ),
+                ) + AnnotationIndex.entries.map { it.alias } + listOf("list.types"),
                 baseSize = baseListTabs.size,
                 pluginKeys = pluginListTabs.map { it.tab.key }
             )
@@ -469,10 +539,12 @@ fun ProjectScaffold(
                 pluginKeys = pluginDetailTabs.map { it.tab.key }
             )
 
+            MainCategory.R2Flutter -> setOf("flutter", "r2flutter")
+
             MainCategory.Project -> buildCurrentTabAliases(
                 selectedIndex = selectedProjectTabIndex,
                 allTitles = projectTabs,
-                baseKeys = listOf("project.settings", "project.command", "project.logs"),
+                baseKeys = listOf("project.settings", "project.command", "project.logs", "project.patches"),
                 baseSize = baseProjectTabs.size,
                 pluginKeys = pluginProjectTabs.map { it.tab.key }
             )
@@ -527,18 +599,34 @@ fun ProjectScaffold(
 
     val isVisited: (Long) -> Boolean = { addr -> visitedAddresses.contains(addr) }
 
-    val jumpToDisasmFromPlugin: (Long) -> Unit = { addr ->
+    val navigateToDetail: (Long, Int) -> Unit = { addr, tab ->
         markVisited(addr)
         selectBuiltinCategory(MainCategory.Detail)
-        selectedDetailTabIndex = 1
-        viewModel.currentDetailTab = 1
+        selectedDetailTabIndex = tab
+        viewModel.currentDetailTab = tab
         viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
     }
+    val jumpToDisasmFromPlugin: (Long) -> Unit = { navigateToDetail(it, 1) }
+
+    val aiChatTopBarState = remember(sessionId) { AiChatTopBarState() }
+    val isAiChat = selectedPluginNavigation == null && selectedCategory == MainCategory.AI && selectedAiTabIndex == 0
+    val topBarContainerColor by animateColorAsState(
+        targetValue = if (isAiChat && aiChatTopBarState.isFeedScrolled) {
+            MaterialTheme.colorScheme.surfaceContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        animationSpec = tween(350),
+        label = "project-topbar-color"
+    )
 
     Scaffold(
         topBar = {
             Column {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = topBarContainerColor
+                ),
                 navigationIcon = {
                     if (!isDisasmSelectionMode) {
                         androidx.compose.material3.IconButton(onClick = onOpenDrawer) {
@@ -551,11 +639,32 @@ fun ProjectScaffold(
                 },
                 title = {
                     if (!isDisasmSelectionMode) {
-                        Text(
-                            text = stringResource(top.wsdx233.r2droid.R.string.app_name),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (isAiChat) {
+                            Column(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { aiChatTopBarState.openHistory() }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(top.wsdx233.r2droid.R.string.app_name),
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontSize = 18.sp,
+                                        lineHeight = 22.sp,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                AiChatTopBarSubtitle(aiViewModel)
+                            }
+                        } else {
+                            Text(
+                                text = stringResource(top.wsdx233.r2droid.R.string.app_name),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -700,6 +809,37 @@ fun ProjectScaffold(
                                             showDecompilerMenu = false
                                             val code = (uiState as? ProjectUiState.Success)?.decompilation?.code
                                             if (!code.isNullOrBlank()) exportDecompCode = code
+                                        }
+                                    )
+                                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                    Text(
+                                        stringResource(R.string.decompiler_section_function),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.decompiler_func_info)) },
+                                        onClick = {
+                                            showDecompilerMenu = false
+                                            val addr = (uiState as? ProjectUiState.Success)?.cursorAddress ?: 0L
+                                            disasmViewModel.onEvent(DisasmEvent.FetchFunctionInfo(addr))
+                                        }
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.decompiler_func_vars)) },
+                                        onClick = {
+                                            showDecompilerMenu = false
+                                            val addr = (uiState as? ProjectUiState.Success)?.cursorAddress ?: 0L
+                                            disasmViewModel.onEvent(DisasmEvent.FetchFunctionVariables(addr))
+                                        }
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.decompiler_local_types)) },
+                                        onClick = {
+                                            showDecompilerMenu = false
+                                            selectBuiltinCategory(MainCategory.List)
+                                            selectedListTabIndex = typesTabIndex
                                         }
                                     )
                                 }
@@ -866,6 +1006,19 @@ fun ProjectScaffold(
                                 )
                             }
                         }
+                    } else if (isAiChat) {
+                        androidx.compose.material3.IconButton(onClick = { aiChatTopBarState.openHistory() }) {
+                            Icon(
+                                Icons.Rounded.Forum,
+                                contentDescription = stringResource(R.string.ai_history)
+                            )
+                        }
+                        androidx.compose.material3.IconButton(onClick = { aiChatTopBarState.requestNewChat() }) {
+                            Icon(
+                                Icons.Rounded.EditNote,
+                                contentDescription = stringResource(R.string.ai_new_chat)
+                            )
+                        }
                     }
                     visibleProjectActions.forEach { descriptor ->
                         IconButton(
@@ -982,6 +1135,24 @@ fun ProjectScaffold(
                             DisasmEvent.RenameFunctionFromInfo(functionInfoState.targetAddress, newName)
                         )
                     },
+                    onUpdateSignature = { signature ->
+                        disasmViewModel.onEvent(
+                            DisasmEvent.UpdateFunctionSignature(functionInfoState.targetAddress, signature)
+                        )
+                    },
+                    onUpdateCallingConvention = { cc ->
+                        disasmViewModel.onEvent(
+                            DisasmEvent.UpdateFunctionCallingConvention(functionInfoState.targetAddress, cc)
+                        )
+                    },
+                    availableCallingConventions = functionInfoState.availableCallingConventions,
+                    typeSuggestions = functionInfoState.typeSuggestions,
+                    isMutating = functionInfoState.isMutating,
+                    errorMessage = functionInfoState.errorMessage,
+                    onDismissError = { disasmViewModel.onEvent(DisasmEvent.ClearFunctionInfoError) },
+                    onOpenVariables = {
+                        disasmViewModel.onEvent(DisasmEvent.FetchFunctionVariables(functionInfoState.targetAddress))
+                    },
                     onJump = { addr ->
                         selectBuiltinCategory(MainCategory.Detail)
                         selectedDetailTabIndex = 1
@@ -1024,6 +1195,21 @@ fun ProjectScaffold(
                                 functionVariablesState.targetAddress, oldName, newName
                             )
                         )
+                    },
+                    onRetype = { varName, newType ->
+                        disasmViewModel.onEvent(
+                            DisasmEvent.RetypeFunctionVariable(
+                                functionVariablesState.targetAddress, varName, newType
+                            )
+                        )
+                    },
+                    typeSuggestions = functionVariablesState.typeSuggestions,
+                    isMutating = functionVariablesState.isMutating,
+                    errorMessage = functionVariablesState.errorMessage,
+                    onDismissError = { disasmViewModel.onEvent(DisasmEvent.ClearFunctionVariablesError) },
+                    onOpenTypesManager = {
+                        selectBuiltinCategory(MainCategory.List)
+                        selectedListTabIndex = typesTabIndex
                     }
                 )
             }
@@ -1060,6 +1246,7 @@ fun ProjectScaffold(
                     r2fridaTabs = baseR2fridaTabs,
                     r2fridaTabTitles = r2fridaTabTitles,
                     isR2Frida = isR2Frida,
+                    isR2Flutter = isR2Flutter,
                     onSwipeUpCommand = { showCommandSheet = true }
                 )
             }
@@ -1074,6 +1261,7 @@ fun ProjectScaffold(
                     Spacer(Modifier.height(8.dp))
                     MainCategory.entries
                         .filter { it != MainCategory.R2Frida || isR2Frida }
+                        .filter { it != MainCategory.R2Flutter || isR2Flutter }
                         .filter { it != MainCategory.AI || isAiEnabled }
                         .forEach { category ->
                             NavigationRailItem(
@@ -1176,6 +1364,7 @@ fun ProjectScaffold(
                                     viewModel = viewModel,
                                     disasmViewModel = disasmViewModel,
                                     tabIndex = selectedListTabIndex,
+                                    onAnnotate = onAnnotate,
                                     overviewScrollState = listOverviewScrollState,
                                     searchResultListState = listSearchResultState,
                                     sectionsListState = listSectionsState,
@@ -1185,13 +1374,7 @@ fun ProjectScaffold(
                                     relocationsListState = listRelocationsState,
                                     stringsListState = listStringsState,
                                     functionsListState = listFunctionsState,
-                                    onNavigateToDetail = { addr, tabIdx ->
-                                        markVisited(addr)
-                                        selectBuiltinCategory(MainCategory.Detail)
-                                        selectedDetailTabIndex = tabIdx
-                                        viewModel.currentDetailTab = tabIdx
-                                        viewModel.onEvent(ProjectEvent.JumpToAddress(addr))
-                                    },
+                                    onNavigateToDetail = navigateToDetail,
                                     onQuickNavigateToDetail = quickJumpToDetail,
                                     onMarkVisited = markVisited,
                                     isVisited = isVisited
@@ -1213,6 +1396,7 @@ fun ProjectScaffold(
                                     hexViewModel = hexViewModel,
                                     disasmViewModel = disasmViewModel,
                                     tabIndex = selectedDetailTabIndex,
+                                    onAnnotate = onAnnotate,
                                     onNavigateToR2Frida = {
                                         selectBuiltinCategory(MainCategory.R2Frida)
                                         selectedR2FridaTabIndex = 0
@@ -1228,10 +1412,20 @@ fun ProjectScaffold(
                                 )
                             }
                         }
+                        MainCategory.R2Flutter -> {
+                            R2FlutterProjectScreen(
+                                viewModel = r2flutterViewModel,
+                                onJumpToDisasm = jumpToDisasmFromPlugin,
+                                onAnalysisApplied = {
+                                    viewModel.onEvent(ProjectEvent.ClearFunctionsCache)
+                                    disasmViewModel.onEvent(DisasmEvent.RefreshData)
+                                }
+                            )
+                        }
                         MainCategory.Project -> {
                             val logs by viewModel.logs.collectAsState()
                             when {
-                                selectedProjectTabIndex == 0 -> ProjectSettingsScreen(viewModel, r2fridaViewModel)
+                                selectedProjectTabIndex == 0 -> ProjectSettingsScreen(viewModel, r2fridaViewModel, onReconnect)
                                 selectedProjectTabIndex == 1 -> CommandScreen(
                                     command = cmdInput,
                                     onCommandChange = { cmdInput = it },
@@ -1239,6 +1433,24 @@ fun ProjectScaffold(
                                     onCommandHistoryChange = { cmdHistory = it }
                                 )
                                 selectedProjectTabIndex == 2 -> LogList(logs, onClearLogs = { viewModel.onEvent(ProjectEvent.ClearLogs) })
+                                selectedProjectTabIndex == 3 && cacheSession != null -> PatchesScreen(
+                                    session = cacheSession,
+                                    onChanged = viewModel::invalidateBinaryViews,
+                                    onJump = { address ->
+                                        markVisited(address)
+                                        selectBuiltinCategory(MainCategory.Detail)
+                                        selectedDetailTabIndex = 0
+                                        viewModel.currentDetailTab = 0
+                                        viewModel.onEvent(ProjectEvent.JumpToAddress(address))
+                                    },
+                                    onJumpToDisasm = { address ->
+                                        markVisited(address)
+                                        selectBuiltinCategory(MainCategory.Detail)
+                                        selectedDetailTabIndex = 1
+                                        viewModel.currentDetailTab = 1
+                                        viewModel.onEvent(ProjectEvent.JumpToAddress(address))
+                                    }
+                                )
                                 else -> {
                                     val pluginTab = pluginProjectTabs.getOrNull(selectedProjectTabIndex - baseProjectTabs.size)
                                     if (pluginTab == null) {
@@ -1272,7 +1484,12 @@ fun ProjectScaffold(
                         MainCategory.AI -> {
                             if (selectedAiTabIndex < baseAiTabs.size) {
                                 when (selectedAiTabIndex) {
-                                    0 -> AiChatScreen(aiViewModel)
+                                    0 -> AiChatScreen(
+                                        viewModel = aiViewModel,
+                                        topBarState = aiChatTopBarState,
+                                        onNavigateToDetail = navigateToDetail,
+                                        onShowXrefs = { disasmViewModel.onEvent(DisasmEvent.FetchXrefs(it)) }
+                                    )
                                     1 -> AiProviderSettingsScreen(aiViewModel)
                                     2 -> AiPromptsScreen()
                                 }
@@ -1524,7 +1741,7 @@ fun ProjectScaffold(
                     if (sheetCommand.isNotBlank()) {
                         sheetExecuting = true
                         sheetScope.launch {
-                            val result = R2PipeManager.execute(sheetCommand)
+                            val result = R2PipeManager.execute(sheetCommand, includeStderr = true)
                             sheetOutput = result.getOrDefault("Error: ${result.exceptionOrNull()?.message}")
                             sheetExecuting = false
                         }
@@ -1877,11 +2094,12 @@ private fun ProjectSubTabs(
                 Tab(selectedDetailTabIndex == i, { onDetailTabSelected(i) }, text = { Text(t) })
             }
         }
+        MainCategory.R2Flutter -> Unit
         MainCategory.Project -> TabRow(
-            selectedTabIndex = selectedProjectTabIndex,
+            selectedTabIndex = selectedProjectTabIndex.coerceAtMost(projectTabs.lastIndex),
             containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.primary,
-            indicator = { indicator(it, selectedProjectTabIndex) }
+            indicator = { indicator(it, selectedProjectTabIndex.coerceAtMost(projectTabs.lastIndex)) }
         ) {
             projectTabs.forEachIndexed { i, t -> Tab(selectedProjectTabIndex == i, { onProjectTabSelected(i) }, text = { Text(t) }) }
         }
@@ -2013,6 +2231,7 @@ private fun ProjectBottomBar(
     r2fridaTabs: List<Int>,
     r2fridaTabTitles: List<String>,
     isR2Frida: Boolean,
+    isR2Flutter: Boolean,
     onSwipeUpCommand: () -> Unit
 ) {
     Surface(
@@ -2056,6 +2275,7 @@ private fun ProjectBottomBar(
             ) {
                 MainCategory.entries
                     .filter { it != MainCategory.R2Frida || isR2Frida }
+                    .filter { it != MainCategory.R2Flutter || isR2Flutter }
                     .filter { it != MainCategory.AI || SettingsManager.aiEnabled }
                     .forEach { category ->
                         NavigationBarItem(

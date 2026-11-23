@@ -8,7 +8,7 @@
 
 - **Radare2 资源安装器**: `app/src/main/java/top/wsdx233/r2droid/util/R2Installer.kt`
   - 首次启动检查并解压 `assets/r2.tar`、`assets/r2dir.tar` 到应用私有目录，设置运行权限。
-- **通用 Kotlin r2pipe 模块**: `r2pipe-kotlin/src/main/kotlin/org/radare/r2pipe/`
+- **通用 Kotlin r2pipe 模块**: `r2pipe-kotlin/src/main/kotlin/org/radare/r2pipe/kotlin/`
   - 提供与 Android 无关的 stdio / HTTP r2pipe 核心实现（`R2Pipe`, `R2PipeHttp`, `R2PipeSession`）。
 - **Android r2pipe 适配层**: `app/src/main/java/top/wsdx233/r2droid/util/AndroidR2PipeSupport.kt`
   - 将 `R2Runtime` 生成的启动参数桥接到通用模块，并提供 Android 日志与进程中断/终止实现。
@@ -39,6 +39,7 @@
   - 分类导航（List/Detail/R2Frida/Project/AI）、顶部工具栏、底部标签体系。
 - **项目状态机**: `app/src/main/java/top/wsdx233/r2droid/feature/project/ProjectScreen.kt`
   - Configuring / Analyzing / Success 切换，退出保存确认流程。
+  - 写入缓存只在当前管道中保留，保存分析不会保存待写入的补丁。返回退出、抽屉关闭或重新连接时需显式确认丢弃；也可取消后在「补丁」页导出或写入文件。确认绑定到具体管道，而不是抽屉会话 ID。
 - **项目核心 ViewModel**: `app/src/main/java/top/wsdx233/r2droid/feature/project/ProjectViewModel.kt`
   - 分析会话启动、分页数据同步、图类型切换、保存/更新项目、反编译设置。
 - **项目持久化仓库**: `app/src/main/java/top/wsdx233/r2droid/feature/project/data/SavedProjectRepository.kt`
@@ -49,7 +50,8 @@
 ### 3.2 十六进制视图 (Hex Viewer)
 
 - **数据虚拟化核心**: `app/src/main/java/top/wsdx233/r2droid/feature/hex/data/HexDataManager.kt`
-  - 大文件分块加载（4KB）+ 缓存策略。
+  - 4 KB 分块相对视图起始地址对齐；先加载可见块，再预取最多 4 个相邻块，使用 100 块 LRU 缓存。
+  - 每块独立暴露只读字节数组状态；写入、外部刷新会使相关块失效并阻止旧读取结果回填。
 - **Hex 界面**: `app/src/main/java/top/wsdx233/r2droid/feature/hex/ui/HexScreen.kt`
 - **Hex 组件**: `app/src/main/java/top/wsdx233/r2droid/feature/hex/ui/HexComponents.kt`
 - **Hex 键盘**: `app/src/main/java/top/wsdx233/r2droid/feature/hex/ui/HexKeyboard.kt`
@@ -84,9 +86,9 @@
 - **Provider 设置 UI**: `app/src/main/java/top/wsdx233/r2droid/feature/ai/ui/AiProviderSettingsScreen.kt`
 - **提示词管理 UI**: `app/src/main/java/top/wsdx233/r2droid/feature/ai/ui/AiPromptsScreen.kt`
 - **AI 通信仓库**: `app/src/main/java/top/wsdx233/r2droid/feature/ai/data/AiRepository.kt`
-  - OpenAI 兼容接口与流式响应。
+  - `streamTurn` 对接 Chat Completions / Responses 的原生工具调用，完整轮次按调用 ID 回传结果；`streamText` 用于指令解释和反编译润色，不声明工具。
 - **动作执行器**: `app/src/main/java/top/wsdx233/r2droid/feature/ai/data/R2ActionExecutor.kt`
-  - 解析并执行 `[[cmd]]` / `<js>` 动作。
+  - 绑定当前会话管道，支持结构化工具调用执行 `r2_command`、`run_js`（QuickJS）与 `run_frida`（Frida 模式），危险/耗时命令（如 `aa`/`aaa`/`!*`）需用户确认。
 
 ### 3.7 R2Frida (动态插桩)
 

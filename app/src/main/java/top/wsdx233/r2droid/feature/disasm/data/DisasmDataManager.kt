@@ -1,499 +1,313 @@
 package top.wsdx233.r2droid.feature.disasm.data
 
-import android.util.Log
-import android.util.LruCache
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import top.wsdx233.r2droid.core.data.model.AddressOverview
 import top.wsdx233.r2droid.core.data.model.DisasmInstruction
 
-/**
- * Manages disassembly data with chunk-based caching for virtualized scrolling.
- *
- * Core design:
- * - File is divided into chunks based on instruction count
- * - LRU cache holds recently accessed chunks
- * - Data is loaded on-demand based on visible rows
- * - Uses estimated total instructions for scrollbar (can be refined as user scrolls)
- *
- * Thread safety: allInstructions is a @Volatile immutable list reference,
- * swapped atomically in mergeInstructions. Reads always see a consistent snapshot.
- */
-class DisasmDataManager(
+/** Instructions and jump decorations are published together, never from different revisions. */
+data class DisasmSnapshot(
+    val instructions: List<DisasmInstruction> = emptyList(),
+    val jumpToIndex: Map<Long, Int> = emptyMap(),
+    val targetToIndex: Map<Long, Int> = emptyMap()
+)
+
+/** Bounded, immutable display windows. Fetching and merging never run on the UI thread. */
+class DisasmDataManager internal constructor(
     private val startAddress: Long,
     private val endAddress: Long,
-    private val repository: DisasmRepository
+    private val fetchInstructions: suspend (Long, Int) -> Result<List<DisasmInstruction>>,
+    private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    val addressOverview: AddressOverview = AddressOverview.Empty
 ) {
-    private val addressRange: Long = endAddress - startAddress
+    constructor(
+        startAddress: Long,
+        endAddress: Long,
+        repository: DisasmRepository,
+        addressOverview: AddressOverview = AddressOverview.Empty
+    ) : this(startAddress, endAddress, repository::getDisassembly, addressOverview = addressOverview)
+
     companion object {
-        private const val TAG = "DisasmDataMgr"
-        // Instructions per chunk to fetch
         const val INSTRUCTIONS_PER_CHUNK = 100
-
-        // Average instruction size estimate (varies by arch, 4 bytes for ARM, ~3-5 for x86)
         const val AVG_INSTRUCTION_SIZE = 4
-
-        // Cache up to 50 chunks = ~5000 instructions max
         private const val CACHE_MAX_SIZE = 50
+        const val MAX_LOADED_INSTRUCTIONS = 3000
+
+        /** Unlike nearest-index lookup, holes and addresses outside the window are cache misses. */
+        fun coveredIndex(instructions: List<DisasmInstruction>, addr: Long): Int {
+            // A cold scrollbar position is usually outside *every* LRU chunk. Reject it using
+            // the endpoints instead of binary-searching the rows of each unrelated chunk.
+            if (instructions.isEmpty() || addr < instructions.first().addr) return -1
+            val last = instructions.last()
+            if (addr >= last.addr) return if (covers(last, addr)) instructions.lastIndex else -1
+            val found = instructions.binarySearchBy(addr) { it.addr }
+            if (found >= 0) return found
+            val index = -found - 2
+            val previous = instructions.getOrNull(index) ?: return -1
+            return if (covers(previous, addr)) index else -1
+        }
+
+        // Called with addr >= instr.addr. Subtraction remains valid at Long.MAX_VALUE.
+        private fun covers(instr: DisasmInstruction, addr: Long): Boolean =
+            addr.toULong() - instr.addr.toULong() < instr.size.coerceAtLeast(1).toULong()
+
+        /** Allocation-free binary lookup, also usable against the exact snapshot rendered by UI. */
+        fun findClosestIndex(instructions: List<DisasmInstruction>, addr: Long): Int {
+            if (instructions.isEmpty()) return -1
+            val found = instructions.binarySearchBy(addr) { it.addr }
+            if (found >= 0) return found
+            val next = -found - 1
+            if (next == 0) return 0
+            if (next == instructions.size) return next - 1
+            // Unsigned subtraction also handles distances spanning the signed Long boundary.
+            val before = addr.toULong() - instructions[next - 1].addr.toULong()
+            val after = instructions[next].addr.toULong() - addr.toULong()
+            return if (before < after) next - 1 else next
+        }
     }
 
-    // Sorted list of all loaded instructions (by address)
-    // Volatile immutable list - swapped atomically to avoid concurrent modification
-    @Volatile
-    private var allInstructions: List<DisasmInstruction> = emptyList()
-    
-    // LRU Cache: key = chunk start address, value = list of instructions
-    private val cache = LruCache<Long, List<DisasmInstruction>>(CACHE_MAX_SIZE)
-    
-    // Track chunks currently being loaded to avoid duplicate requests
-    private val loadingSet = mutableSetOf<Long>()
-    private val loadingMutex = Mutex()
+    @Volatile private var data = DisasmSnapshot()
+    @Volatile private var generation = 0L
+    @Volatile var onChunkLoaded: ((Long) -> Unit)? = null
 
-    // Generation counter — incremented on every far jump.
-    // Load coroutines capture the value before doing async work;
-    // if it has changed by the time they finish, the result is stale and discarded.
-    @Volatile
-    private var generation = 0
+    // Only brief bookkeeping/publication uses this monitor; parsing/merging stays outside it.
+    private val stateLock = Any()
+    private val mergeMutex = Mutex()
+    private val cache = object : LinkedHashMap<Long, DisasmSnapshot>(CACHE_MAX_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, DisasmSnapshot>?): Boolean =
+            size > CACHE_MAX_SIZE
+    }
+    private val loading = mutableMapOf<Long, Any>()
 
-    // Callback to notify when a chunk is loaded (for UI refresh)
-    var onChunkLoaded: ((Long) -> Unit)? = null
-
-    // Pre-computed jump maps — rebuilt in mergeInstructions on background thread.
-    // jumpToIndex: jump instruction addr -> assigned jump index
-    // targetToIndex: jump target addr -> same assigned jump index
-    @Volatile
-    var jumpToIndexMap: Map<Long, Int> = emptyMap()
-        private set
-    @Volatile
-    var targetToIndexMap: Map<Long, Int> = emptyMap()
-        private set
-    
-    // Estimated total instruction count based on address range
     val estimatedTotalInstructions: Int
-        get() = ((addressRange + AVG_INSTRUCTION_SIZE - 1) / AVG_INSTRUCTION_SIZE).toInt()
-    
-    // Get the start address of the valid disasm range
-    val viewStartAddress: Long
-        get() = startAddress
-    
-    // Get the end address of the valid disasm range
-    val viewEndAddress: Long
-        get() = endAddress
-    
-    // Current actual loaded instructions count
-    val loadedInstructionCount: Int
-        get() = allInstructions.size
-
-    /**
-     * Get a consistent snapshot of all loaded instructions.
-     * Use this to avoid reading the volatile field multiple times in a single layout pass.
-     */
-    fun getSnapshot(): List<DisasmInstruction> = allInstructions
-    
-    /**
-     * Prepare for a far jump: increment generation so in-flight loads become stale,
-     * clear the LRU cache (old address data), and clear the loading set.
-     */
-    suspend fun prepareForJump() {
-        generation++
-        Log.w(TAG, "prepareForJump: generation=$generation, evicting cache & loadingSet")
-        cache.evictAll()
-        loadingMutex.withLock {
-            loadingSet.clear()
+        get() {
+            val range = (endAddress - startAddress).coerceAtLeast(0)
+            return (range / AVG_INSTRUCTION_SIZE + if (range % AVG_INSTRUCTION_SIZE == 0L) 0 else 1)
+                .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         }
-    }
+    val viewStartAddress: Long get() = startAddress
+    val viewEndAddress: Long get() = endAddress
+    val loadedInstructionCount: Int get() = data.instructions.size
+    val jumpToIndexMap: Map<Long, Int> get() = data.jumpToIndex
+    val targetToIndexMap: Map<Long, Int> get() = data.targetToIndex
 
-    /**
-     * Get instruction at a specific index in the virtual list.
-     * Returns null if the instruction is not yet loaded.
-     */
-    fun getInstructionAt(index: Int): DisasmInstruction? {
-        val snapshot = allInstructions
-        if (index < 0 || index >= snapshot.size) return null
-        return snapshot.getOrNull(index)
+    fun getDataSnapshot(): DisasmSnapshot = data
+    fun getSnapshot(): List<DisasmInstruction> = data.instructions
+    fun getInstructionAt(index: Int): DisasmInstruction? = data.instructions.getOrNull(index)
+    fun getAddressAt(index: Int): Long? = getInstructionAt(index)?.addr
+    fun findIndexByAddress(addr: Long): Int = data.instructions.binarySearchBy(addr) { it.addr }.let {
+        if (it >= 0) it else -1
     }
-    
-    /**
-     * Get the address for a specific index.
-     * Used for calculating scrollbar position.
-     */
-    fun getAddressAt(index: Int): Long? {
-        return getInstructionAt(index)?.addr
-    }
-    
-    /**
-     * Find the index of an instruction by address.
-     * Returns -1 if not found.
-     */
-    fun findIndexByAddress(addr: Long): Int {
-        val snapshot = allInstructions
-        return snapshot.indexOfFirst { it.addr == addr }
-    }
-    
-    /**
-     * Get instruction by address.
-     */
     fun getInstructionAtAddress(addr: Long): DisasmInstruction? {
-        val snapshot = allInstructions
-        return snapshot.find { it.addr == addr }
+        val snapshot = data.instructions
+        return snapshot.getOrNull(snapshot.binarySearchBy(addr) { it.addr })
     }
-    
-    /**
-     * Find the closest index to an address.
-     * If the exact address is not found, returns the index of the closest instruction.
-     */
-    fun findClosestIndex(addr: Long): Int {
-        val snapshot = allInstructions
-        if (snapshot.isEmpty()) return -1
+    fun findClosestIndex(addr: Long): Int = findClosestIndex(data.instructions, addr)
+    fun estimateIndexForAddress(addr: Long): Int = findClosestIndex(addr).coerceAtLeast(0)
+    fun estimateAddressForIndex(index: Int): Long = getAddressAt(index)
+        ?: (startAddress + index.coerceAtLeast(0).toLong() * AVG_INSTRUCTION_SIZE).coerceIn(startAddress, endAddress)
 
-        // Binary search for efficiency on sorted list
-        var low = 0
-        var high = snapshot.size - 1
-        while (low <= high) {
-            val mid = (low + high) ushr 1
-            val midAddr = snapshot[mid].addr
-            when {
-                midAddr < addr -> low = mid + 1
-                midAddr > addr -> high = mid - 1
-                else -> return mid
+    /** A nearby instruction alone is not enough: the address must actually be covered. */
+    fun isAddressRangeLoaded(addr: Long): Boolean = coveredIndex(data.instructions, addr) >= 0
+
+    /**
+     * Synchronous, bounded preview lookup (at most 50 binary searches). Cached jump maps are
+     * built on the worker, so a pointer event only swaps an immutable snapshot, never merges it.
+     */
+    fun showCachedAddress(addr: Long): Boolean {
+        synchronized(stateLock) {
+            if (isAddressRangeLoaded(addr)) return true
+            var key: Long? = null
+            // Prefer the most recently used covering chunk. Touch its LRU entry after iteration.
+            for ((address, chunk) in cache) {
+                if (coveredIndex(chunk.instructions, addr) >= 0) key = address
             }
+            val cached = cache[key ?: return false] ?: return false
+            generation++
+            loading.clear()
+            data = cached
         }
-        // low is the insertion point; check neighbors for closest
-        val candidates = listOfNotNull(
-            snapshot.getOrNull(low),
-            snapshot.getOrNull(low - 1)
-        )
-        if (candidates.isEmpty()) return snapshot.size - 1
-        val closest = candidates.minByOrNull { kotlin.math.abs(it.addr - addr) }!!
-        return snapshot.indexOf(closest)
+        onChunkLoaded?.invoke(addr)
+        return true
     }
-    
-    /**
-     * Estimate the index in the virtual list for a given address.
-     * Used for fast scrollbar jumping.
-     */
-    fun estimateIndexForAddress(addr: Long): Int {
-        val snapshot = allInstructions
-        if (snapshot.isEmpty()) return 0
 
-        // If we have loaded data, try to find exact match
-        val exactIndex = snapshot.indexOfFirst { it.addr == addr }
-        if (exactIndex >= 0) return exactIndex
-
-        val firstAddr = snapshot.first().addr
-        val lastAddr = snapshot.last().addr
-
-        // Clamp to loaded data boundaries
-        if (addr <= firstAddr) return 0
-        if (addr >= lastAddr) return snapshot.size - 1
-
-        // Linear interpolation within loaded range
-        val range = lastAddr - firstAddr
-        if (range > 0) {
-            val ratio = (addr - firstAddr).toDouble() / range
-            return (ratio * (snapshot.size - 1)).toInt().coerceIn(0, snapshot.size - 1)
-        }
-
-        return 0
+    /** Invalidate outstanding requests without throwing away reusable chunks on every navigation. */
+    fun prepareForJump() = synchronized(stateLock) {
+        generation++
+        loading.clear()
     }
-    
-    /**
-     * Convert a virtual index to approximate address.
-     * Used for scrollbar position calculation.
-     */
-    fun estimateAddressForIndex(index: Int): Long {
-        if (index < 0) return 0L
-        val snapshot = allInstructions
 
-        // If we have the instruction, return exact address
-        if (index < snapshot.size) {
-            return snapshot.getOrNull(index)?.addr ?: 0L
-        }
-
-        // Estimate based on index from start address
-        return (startAddress + index.toLong() * AVG_INSTRUCTION_SIZE).coerceIn(startAddress, endAddress)
-    }
-    
-    /**
-     * Check if instructions around an address are loaded.
-     */
-    fun isAddressRangeLoaded(addr: Long): Boolean {
-        val snapshot = allInstructions
-        return snapshot.any {
-            kotlin.math.abs(it.addr - addr) < (INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE)
-        }
-    }
-    
-    /**
-     * Load instructions around an address if not already loaded.
-     */
     suspend fun loadChunkAroundAddress(addr: Long) {
-        val gen = generation  // capture before async work
+        if (!isAddressRangeLoaded(addr)) loadFromAddress(addr)
+    }
 
-        // Align to chunk boundary (approximate)
-        val chunkStart = (addr / (INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE)) *
-                        (INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE)
+    suspend fun loadFromAddress(startAddr: Long) = loadFromAddress(startAddr, generation, replace = false)
 
-        // Already cached
-        if (cache.get(chunkStart) != null) return
-
-        // Check if already loading
-        loadingMutex.withLock {
-            if (loadingSet.contains(chunkStart)) return
-            loadingSet.add(chunkStart)
+    private suspend fun loadFromAddress(startAddr: Long, gen: Long, replace: Boolean) = withContext(workerDispatcher) {
+        val token = Any()
+        val cached = synchronized(stateLock) {
+            if (generation != gen || loading.containsKey(startAddr)) return@withContext
+            loading[startAddr] = token
+            cache[startAddr]
         }
-
         try {
-            val result = repository.getDisassembly(addr, INSTRUCTIONS_PER_CHUNK)
-            result.onSuccess { instructions ->
-                if (generation != gen) {
-                    Log.w(TAG, "loadChunkAround: STALE gen=$gen cur=$generation, discarding ${instructions.size} instrs at ${"%X".format(addr)}")
-                    return@onSuccess
+            val instructions = cached?.instructions ?: fetchInstructions(startAddr, INSTRUCTIONS_PER_CHUNK).getOrThrow()
+                .distinctBy { it.addr }.sortedBy { it.addr }
+            currentCoroutineContext().ensureActive()
+            if (instructions.isEmpty()) return@withContext
+            // These model properties are lazy. Warm them here so first appearance of a row
+            // doesn't run formatting/string building during a scroll frame on Main.
+            if (cached == null) instructions.forEach {
+                it.displayAddress
+                it.displayBytes
+                it.inlineComment
+            }
+            val chunk = cached ?: buildSnapshot(instructions)
+            val changed = mergeMutex.withLock {
+                if (generation != gen) return@withLock false
+                val current = data
+                val merged = mergeInstructions(if (replace) emptyList() else current.instructions, instructions)
+                val next = when {
+                    merged === current.instructions -> current
+                    merged === instructions -> chunk
+                    else -> buildSnapshot(merged)
                 }
-                if (instructions.isNotEmpty()) {
-                    cache.put(chunkStart, instructions)
-                    mergeInstructions(instructions)
-                    onChunkLoaded?.invoke(chunkStart)
+                currentCoroutineContext().ensureActive()
+                synchronized(stateLock) {
+                    if (generation != gen) return@synchronized false
+                    cache[startAddr] = chunk
+                    data = next
+                    next !== current
                 }
             }
+            if (changed && generation == gen) onChunkLoaded?.invoke(startAddr)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Keep the last good window on an R2 failure; the next edge/jump can retry.
         } finally {
-            loadingMutex.withLock {
-                loadingSet.remove(chunkStart)
+            // No suspension in cleanup. An old request must never remove a newer request's token.
+            synchronized(stateLock) {
+                if (loading[startAddr] === token) loading.remove(startAddr)
             }
         }
     }
-    
-    /**
-     * Load instructions starting from a specific address.
-     */
-    suspend fun loadFromAddress(startAddr: Long, forward: Boolean = true) {
-        val gen = generation
-        // Check if already loading this region
-        loadingMutex.withLock {
-            if (loadingSet.contains(startAddr)) return
-            loadingSet.add(startAddr)
-        }
 
-        try {
-            val result = repository.getDisassembly(startAddr, INSTRUCTIONS_PER_CHUNK)
-            result.onSuccess { instructions ->
-                if (generation != gen) {
-                    Log.w(TAG, "loadFromAddress: STALE gen=$gen cur=$generation, discarding ${instructions.size} instrs at ${"%X".format(startAddr)}")
-                    return@onSuccess
-                }
-                if (instructions.isNotEmpty()) {
-                    cache.put(startAddr, instructions)
-                    mergeInstructions(instructions)
-                    onChunkLoaded?.invoke(startAddr)
-                }
-            }
-        } finally {
-            loadingMutex.withLock {
-                loadingSet.remove(startAddr)
-            }
-        }
-    }
-    
-    /**
-     * Preload chunks around the given address.
-     */
+    /** Extend the existing window instead of decoding overlapping chunks at every visible row. */
     suspend fun preloadAround(addr: Long, rangeChunks: Int = 2) {
         val gen = generation
-        // Load the current chunk first
-        loadChunkAroundAddress(addr)
-        if (generation != gen) return  // jump happened mid-preload
-
-        // Find current position in loaded list
-        val currentIndex = findClosestIndex(addr)
-        if (currentIndex < 0) return
-
-        val avgChunkSize = INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE
-
-        // Preload previous chunks
-        for (i in 1..rangeChunks) {
+        if (!isAddressRangeLoaded(addr)) loadFromAddress(addr, gen, replace = false)
+        val desiredRows = rangeChunks.toLong() * INSTRUCTIONS_PER_CHUNK
+        repeat(rangeChunks) {
             if (generation != gen) return
-            val prevAddr = (addr - i * avgChunkSize).coerceAtLeast(startAddress)
-            if (prevAddr >= startAddress) {
-                loadChunkAroundAddress(prevAddr)
-            }
-        }
-
-        // Preload next chunks
-        for (i in 1..rangeChunks) {
-            if (generation != gen) return
-            val nextAddr = addr + i * avgChunkSize
-            if (nextAddr < endAddress) {
-                loadChunkAroundAddress(nextAddr)
-            }
+            val window = data.instructions
+            val index = coveredIndex(window, addr)
+            if (index < 0) return
+            // Don't grow the remote edges of a large, already warm window at every dwell.
+            val needBefore = index < desiredRows
+            val needAfter = window.lastIndex - index < desiredRows
+            if (!needBefore && !needAfter) return
+            if (needBefore) loadMore(false, gen)
+            if (needAfter) loadMore(true, gen)
         }
     }
-    
-    /**
-     * Load more instructions from the end or beginning.
-     */
-    suspend fun loadMore(forward: Boolean) {
-        val snapshot = allInstructions
+
+    suspend fun loadMore(forward: Boolean) = loadMore(forward, generation)
+
+    private suspend fun loadMore(forward: Boolean, gen: Long) {
+        if (generation != gen) return
+        val snapshot = data.instructions
         if (snapshot.isEmpty()) return
-
         if (forward) {
-            val lastInstr = snapshot.lastOrNull() ?: return
-            val nextAddr = lastInstr.addr + lastInstr.size
-            if (nextAddr < endAddress) {
-                loadFromAddress(nextAddr, true)
-            }
+            val last = snapshot.last()
+            val next = last.addr + last.size.coerceAtLeast(1)
+            if (next < endAddress) loadFromAddress(next, gen, replace = false)
         } else {
-            val firstInstr = snapshot.firstOrNull() ?: return
-            if (firstInstr.addr <= startAddress) return
-
-            // Go back by estimated chunk size
-            val prevAddr = (firstInstr.addr - INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE)
-                .coerceAtLeast(startAddress)
-            loadFromAddress(prevAddr, false)
+            val first = snapshot.first().addr
+            if (first <= startAddress) return
+            val previous = (first - INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE).coerceAtLeast(startAddress)
+            loadFromAddress(previous, gen, replace = false)
         }
     }
-    
-    /**
-     * Merge new instructions into the sorted list.
-     * Uses atomic reference swap - readers always see a consistent snapshot.
-     *
-     * Gap detection: if the new chunk has no overlap or adjacency with existing data
-     * (distance > CHUNK_GAP_THRESHOLD), the old data is discarded to prevent
-     * address discontinuities that cause the LazyColumn to skip over unloaded regions.
-     */
-    @Synchronized
-    private fun mergeInstructions(newInstructions: List<DisasmInstruction>) {
-        if (newInstructions.isEmpty()) return
 
-        val current = allInstructions
-
-        if (current.isNotEmpty()) {
-            val currentFirst = current.first().addr
-            val currentLast = current.last().addr
-            val newFirst = newInstructions.first().addr
-            val newLast = newInstructions.last().addr
-
-            // Check if new data is adjacent or overlapping with existing data
-            val gapThreshold = INSTRUCTIONS_PER_CHUNK.toLong() * AVG_INSTRUCTION_SIZE * 2
-            val hasOverlap = !(newLast < currentFirst - gapThreshold || newFirst > currentLast + gapThreshold)
-
-            if (!hasOverlap) {
-                // Gap detected — discard old data to prevent address discontinuity
-                allInstructions = newInstructions.distinctBy { it.addr }.sortedBy { it.addr }
-                rebuildJumpMaps()
-                return
+    /** O(n + m) merge; existing decoded instructions win at duplicate addresses. */
+    private fun mergeInstructions(current: List<DisasmInstruction>, incoming: List<DisasmInstruction>): List<DisasmInstruction> {
+        if (current.isEmpty()) return if (incoming.size <= MAX_LOADED_INSTRUCTIONS) incoming else incoming.take(MAX_LOADED_INSTRUCTIONS)
+        val gap = INSTRUCTIONS_PER_CHUNK.toLong() * AVG_INSTRUCTION_SIZE * 2
+        if (incoming.last().addr < current.first().addr - gap || incoming.first().addr > current.last().addr + gap) {
+            return if (incoming.size <= MAX_LOADED_INSTRUCTIONS) incoming else incoming.take(MAX_LOADED_INSTRUCTIONS)
+        }
+        val merged = ArrayList<DisasmInstruction>(current.size + incoming.size)
+        var old = 0
+        var new = 0
+        var added = false
+        while (old < current.size || new < incoming.size) {
+            when {
+                new == incoming.size -> merged.add(current[old++])
+                old == current.size -> { merged.add(incoming[new++]); added = true }
+                current[old].addr < incoming[new].addr -> merged.add(current[old++])
+                current[old].addr > incoming[new].addr -> { merged.add(incoming[new++]); added = true }
+                else -> { merged.add(current[old++]); new++ }
             }
         }
-
-        val combined = (current + newInstructions)
-            .distinctBy { it.addr }
-            .sortedBy { it.addr }
-        // Atomic swap - no clear+addAll race condition
-        allInstructions = combined
-        rebuildJumpMaps()
-    }
-    
-    /**
-     * Reset and load initial data around an address.
-     */
-    suspend fun resetAndLoadAround(addr: Long) {
-        generation++
-        Log.w(TAG, "resetAndLoadAround: RESET, target=${"%X".format(addr)}, was ${allInstructions.size} instrs, gen=$generation")
-        allInstructions = emptyList()
-        cache.evictAll()
-        loadingMutex.withLock { loadingSet.clear() }
-        
-        // Load centered around address
-        // First, seek back a bit to get context
-        val startAddr = (addr - INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE / 2)
-            .coerceAtLeast(startAddress)
-        
-        loadFromAddress(startAddr, true)
-        
-        // If we didn't get the target address, load from target too
-        if (!allInstructions.any { it.addr == addr }) {
-            loadFromAddress(addr, true)
-        }
-    }
-    
-    /**
-     * Load data around an address and return the closest index.
-     * This ensures data is available before attempting to scroll.
-     */
-    suspend fun loadAndFindIndex(addr: Long): Int {
-        val gen = generation
-        // If already loaded nearby, just find the index
-        val existingIndex = findClosestIndex(addr)
-        if (existingIndex >= 0) {
-            val existingAddr = getAddressAt(existingIndex)
-            if (existingAddr != null && kotlin.math.abs(existingAddr - addr) < INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE) {
-                return existingIndex
-            }
-        }
-
-        // Load data at the target address
-        loadFromAddress(addr, true)
-        if (generation != gen) {
-            Log.w(TAG, "loadAndFindIndex: generation changed during load, aborting")
-            return findClosestIndex(addr).coerceAtLeast(0)
-        }
-
-        // Also try loading slightly before to get context
-        val prevAddr = (addr - INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE / 2)
-            .coerceAtLeast(startAddress)
-        if (prevAddr < addr) {
-            loadFromAddress(prevAddr, true)
-        }
-
-        return findClosestIndex(addr).coerceAtLeast(0)
+        if (!added) return current
+        return if (merged.size <= MAX_LOADED_INSTRUCTIONS) merged
+        else if (incoming.first().addr < current.first().addr) merged.take(MAX_LOADED_INSTRUCTIONS)
+        else merged.takeLast(MAX_LOADED_INSTRUCTIONS)
     }
 
-    /**
-     * Rebuild jump maps from current instruction list.
-     * Called inside @Synchronized mergeInstructions, so no extra locking needed.
-     */
-    private fun rebuildJumpMaps() {
-        val snapshot = allInstructions
-        val jumpTo = mutableMapOf<Long, Int>()
-        val targetTo = mutableMapOf<Long, Int>()
+    private fun buildSnapshot(instructions: List<DisasmInstruction>): DisasmSnapshot {
+        val jumps = mutableMapOf<Long, Int>()
+        val targets = mutableMapOf<Long, Int>()
         var counter = 1
-
-        for (instr in snapshot) {
-            if (instr.type in listOf("jmp", "cjmp", "ujmp") && instr.jump != null) {
-                val isInternal = instr.fcnAddr > 0 &&
-                        instr.jump >= instr.fcnAddr &&
-                        instr.jump <= instr.fcnLast
-                if (isInternal) {
-                    jumpTo[instr.addr] = counter
-                    targetTo[instr.jump] = counter
-                    counter++
-                }
+        for (instr in instructions) {
+            val isJump = instr.type == "jmp" || instr.type == "cjmp" || instr.type == "ujmp"
+            if (isJump && instr.jump != null && instr.fcnAddr > 0 && instr.jump in instr.fcnAddr..instr.fcnLast) {
+                jumps[instr.addr] = counter
+                targets[instr.jump] = counter++
             }
         }
-
-        jumpToIndexMap = jumpTo
-        targetToIndexMap = targetTo
+        return DisasmSnapshot(instructions, jumps, targets)
     }
 
-    /**
-     * Jump to a distant address — resets all cached data and loads fresh around the target.
-     * Use this for scrollbar drag-end and explicit address jumps to avoid data discontinuities.
-     */
+    suspend fun resetAndLoadAround(addr: Long) {
+        clearCache()
+        loadAndFindIndex(addr)
+    }
+
+    suspend fun loadAndFindIndex(addr: Long, preloadPrevious: Boolean = true): Int {
+        if (showCachedAddress(addr)) return findClosestIndex(addr)
+        val gen = generation
+        // Keep the old window visible until the new one is ready, and never merge across a far jump.
+        loadFromAddress(addr, gen, replace = true)
+        if (generation != gen) return -1
+        if (preloadPrevious && isAddressRangeLoaded(addr)) {
+            // Centered navigation wants preceding rows; the scrollbar publishes its top row
+            // first and preloads both neighbors separately after releasing the UI target.
+            val previous = (addr - INSTRUCTIONS_PER_CHUNK * AVG_INSTRUCTION_SIZE / 2).coerceAtLeast(startAddress)
+            if (previous < addr) loadFromAddress(previous, gen, replace = false)
+        }
+        return if (generation == gen && isAddressRangeLoaded(addr)) findClosestIndex(addr) else -1
+    }
+
     suspend fun jumpToAddress(addr: Long): Int {
-        resetAndLoadAround(addr)
-        return findClosestIndex(addr).coerceAtLeast(0)
+        prepareForJump()
+        return loadAndFindIndex(addr)
     }
 
-    /**
-     * Clear all cached data.
-     */
-    fun clearCache() {
-        allInstructions = emptyList()
-        cache.evictAll()
+    fun clearCache() = synchronized(stateLock) {
+        generation++
+        loading.clear()
+        cache.clear()
+        data = DisasmSnapshot()
     }
-    
-    /**
-     * Get cache statistics for debugging.
-     */
-    fun getCacheStats(): String {
-        return "Loaded: ${allInstructions.size} instructions, Cache: ${cache.size()}/$CACHE_MAX_SIZE chunks"
+
+    fun getCacheStats(): String = synchronized(stateLock) {
+        "Loaded: ${data.instructions.size} instructions, Cache: ${cache.size}/$CACHE_MAX_SIZE chunks"
     }
 }

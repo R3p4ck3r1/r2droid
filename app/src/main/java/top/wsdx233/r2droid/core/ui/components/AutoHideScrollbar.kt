@@ -2,37 +2,45 @@ package top.wsdx233.r2droid.core.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.verticalDrag
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import top.wsdx233.r2droid.R
+import top.wsdx233.r2droid.core.data.model.AddressOverview
+import top.wsdx233.r2droid.core.data.model.RegionKind
+import kotlin.math.roundToInt
 
 /**
  * Auto-hiding scrollbar that appears only during scrolling.
@@ -77,7 +85,7 @@ fun AutoHideScrollbar(
     var isPressing by remember { mutableStateOf(false) }
     
     // Animate alpha for smooth fade in/out
-    val alpha by animateFloatAsState(
+    val alpha = animateFloatAsState(
         targetValue = if (alwaysShow || isVisible || isDragging) 1f else 0f,
         animationSpec = tween(durationMillis = animationDurationMs),
         label = "scrollbar_alpha"
@@ -107,26 +115,11 @@ fun AutoHideScrollbar(
         }
     }
     
-    // Calculate thumb position
-    val currentIndex = listState.firstVisibleItemIndex
-    val layoutInfo = listState.layoutInfo
-    val visibleItemsCount = layoutInfo.visibleItemsInfo.size
-    
-    // Calculate scroll percentage considering visible items
-    // When at bottom: currentIndex = totalItems - visibleItemsCount
-    val scrollableItems = maxOf(1, totalItems - visibleItemsCount)
-    val thumbY = if (totalItems > 0 && scrollableItems > 0) {
-        (currentIndex.toFloat() / scrollableItems.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-    val bias = (thumbY * 2 - 1).coerceIn(-1f, 1f)
-    
-    Box(
+    Canvas(
         modifier = modifier
             .fillMaxHeight()
             .width(trackWidth)
-            .alpha(alpha)
+            .graphicsLayer { this.alpha = alpha.value }
             .pointerInput(totalItems) {
                 detectVerticalDragGestures(
                     onDragStart = {
@@ -200,29 +193,20 @@ fun AutoHideScrollbar(
                 )
             }
     ) {
-        // Scrollbar thumb - positioned at the right edge
-        Box(
-            Modifier
-                .align(BiasAlignment(1f, bias))
-                .size(thumbWidth, thumbHeight)
-                .background(currentThumbColor)
-        )
+        // Scroll/layout state changes every frame. Only invalidate the thumb's drawing.
+        val scrollableItems = (totalItems - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
+        val ratio = (listState.firstVisibleItemIndex.toFloat() / scrollableItems).coerceIn(0f, 1f)
+        val width = thumbWidth.toPx().coerceAtMost(size.width)
+        val height = thumbHeight.toPx().coerceAtMost(size.height)
+        val x = if (layoutDirection == LayoutDirection.Ltr) size.width - width else 0f
+        drawRect(currentThumbColor, Offset(x, ratio * (size.height - height)), Size(width, height))
     }
 }
 
 /**
- * Specialized auto-hiding scrollbar for address-based navigation.
- * Used by Hex and Disasm viewers where scrolling is based on virtual addresses.
- * 
- * @param listState The LazyListState to observe for scroll events
- * @param totalItems Total number of items in the list (loaded items)
- * @param viewStartAddress Start address of the viewable range
- * @param viewEndAddress End address of the viewable range  
- * @param currentAddress Current address at the visible position
- * @param modifier Modifier for positioning
- * @param thumbColor Color of the scroll thumb
- * @param alwaysShow If true, always show the scrollbar (no auto-hide)
- * @param onScrollToAddress Callback when user drags/taps, receives target address
+ * Address scrollbar with frame-local thumb feedback. [onScrollToAddress] is a cheap preview;
+ * [onDragComplete] is called exactly once on release (including a tap), never on cancellation.
+ * Keep [isSeeking] true while loading the committed address to avoid snapping the thumb back.
  */
 @Composable
 fun AutoHideAddressScrollbar(
@@ -230,9 +214,9 @@ fun AutoHideAddressScrollbar(
     totalItems: Int,
     viewStartAddress: Long,
     viewEndAddress: Long,
-    currentAddress: Long,
+    currentAddress: () -> Long,
     modifier: Modifier = Modifier,
-    thumbColor: Color = colorResource(R.color.thumb_color),
+    thumbColor: Color = MaterialTheme.colorScheme.onSurface,
     trackWidth: Dp = 16.dp,
     thumbWidth: Dp = 8.dp,
     thumbHeight: Dp = 40.dp,
@@ -240,141 +224,139 @@ fun AutoHideAddressScrollbar(
     animationDurationMs: Int = 300,
     alwaysShow: Boolean = false,
     onScrollToAddress: (Long) -> Unit = {},
-    onDragComplete: (Long) -> Unit = {}
+    onDragComplete: (Long) -> Unit = {},
+    onDragStateChange: (Boolean) -> Unit = {},
+    isSeeking: Boolean = false,
+    overview: AddressOverview = AddressOverview.Empty,
+    onDragThumbCenter: ((Float) -> Unit)? = null
 ) {
-    if (totalItems <= 0) return
+    if (totalItems <= 0 || viewEndAddress <= viewStartAddress) return
 
-    val totalAddressRange = viewEndAddress - viewStartAddress
-    if (totalAddressRange <= 0) return
-
-    val coroutineScope = rememberCoroutineScope()
+    val preview by rememberUpdatedState(onScrollToAddress)
+    val reportCenter by rememberUpdatedState(onDragThumbCenter)
+    val commit by rememberUpdatedState(onDragComplete)
+    val dragStateChange by rememberUpdatedState(onDragStateChange)
+    val address by rememberUpdatedState(currentAddress)
+    val seeking by rememberUpdatedState(isSeeking)
     var isVisible by remember { mutableStateOf(alwaysShow) }
     var isDragging by remember { mutableStateOf(false) }
-    var isPressing by remember { mutableStateOf(false) }
-    var lastDragAddress by remember { mutableStateOf(0L) }
-    // Track drag position directly so thumb follows finger without waiting for data load
-    var dragThumbRatio by remember { mutableStateOf<Float?>(null) }
-    
-    // Animate alpha for smooth fade in/out
-    val alpha by animateFloatAsState(
-        targetValue = if (alwaysShow || isVisible || isDragging) 1f else 0f,
-        animationSpec = tween(durationMillis = animationDurationMs),
-        label = "scrollbar_alpha"
+    // Read only during drawing/gestures: pointer moves do not recompose the scrollbar.
+    var dragThumbRatio by remember(viewStartAddress, viewEndAddress) { mutableStateOf<Float?>(null) }
+    val alpha = animateFloatAsState(
+        targetValue = if (alwaysShow || isVisible || isDragging || isSeeking) 1f else 0f,
+        animationSpec = tween(animationDurationMs),
+        label = "address_scrollbar_alpha"
     )
-    
-    // Use primary color when pressing or dragging, otherwise use default thumb color
-    val currentThumbColor = if (isPressing || isDragging) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        thumbColor
-    }
-    
-    // Monitor scroll state changes (only if not alwaysShow)
-    LaunchedEffect(listState, alwaysShow) {
+
+    LaunchedEffect(listState, alwaysShow, hideDelayMs) {
         if (!alwaysShow) {
-            snapshotFlow { 
-                listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset 
-            }.collectLatest { (_, _) ->
+            snapshotFlow {
+                Triple(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, isDragging || seeking)
+            }.collectLatest {
                 isVisible = true
                 delay(hideDelayMs)
-                if (!isDragging) {
-                    isVisible = false
-                }
+                isVisible = false
             }
         }
     }
-    
-    // Calculate thumb position based on current address in virtual range
-    // During drag, use the finger position directly for immediate feedback
-    val thumbY = dragThumbRatio ?: if (currentAddress >= viewStartAddress) {
-        ((currentAddress - viewStartAddress).toFloat() / totalAddressRange.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
+    LaunchedEffect(isDragging, isSeeking) {
+        if (!isDragging && !isSeeking) dragThumbRatio = null
     }
-    val bias = (thumbY * 2 - 1).coerceIn(-1f, 1f)
-    
-    Box(
+
+    fun addressRatio(): Float {
+        val range = (viewEndAddress - 1 - viewStartAddress).coerceAtLeast(1)
+        return ((address().coerceIn(viewStartAddress, viewEndAddress - 1) - viewStartAddress).toDouble() / range)
+            .toFloat().coerceIn(0f, 1f)
+    }
+
+    // Keep the cache modifier stable across preview/list recompositions. Only overview, range,
+    // size or density changes should rebuild the strip geometry, never a moving thumb.
+    val strip = remember(overview, viewStartAddress, viewEndAddress, thumbWidth, thumbHeight) {
+        Modifier.drawWithCache {
+            val thumbPx = thumbHeight.toPx().coerceAtMost(size.height)
+            val travel = size.height - thumbPx
+            val thumbWidthPx = thumbWidth.toPx().coerceAtMost(size.width)
+            val stripWidth = minOf(5.dp.toPx(), thumbWidthPx)
+            if (overview == AddressOverview.Empty || travel <= 0f || stripWidth <= 0f) {
+                return@drawWithCache onDrawBehind { }
+            }
+
+            val bandsByKind = Array(RegionKind.entries.size) { Path() }
+            val dividers = Path()
+            val rows = travel.roundToInt().coerceAtLeast(1)
+            val left = size.width - (thumbWidthPx + stripWidth) / 2f
+            val right = left + stripWidth
+            // The first/last raster boundaries are the centers of the thumb at either end.
+            fun rowY(row: Int) = thumbPx / 2f + (row.toFloat() / rows) * travel
+            for (band in overview.rasterize(viewStartAddress, viewEndAddress, rows)) {
+                val top = rowY(band.firstRow)
+                val bottom = rowY(band.endRow)
+                bandsByKind[band.kind.ordinal].addRect(Rect(left, top, right, bottom))
+                if (band.separatorBefore) {
+                    dividers.addRect(Rect(left, top, right, minOf(top + 1f, bottom)))
+                }
+            }
+            onDrawBehind {
+                for (kind in RegionKind.entries) {
+                    val path = bandsByKind[kind.ordinal]
+                    if (!path.isEmpty) drawPath(path, BinaryPermissionColors[kind])
+                }
+                if (!dividers.isEmpty) drawPath(dividers, Color.Black.copy(alpha = 0.52f))
+            }
+        }
+    }
+
+    Canvas(
         modifier = modifier
             .fillMaxHeight()
             .width(trackWidth)
-            .alpha(alpha)
-            .pointerInput(totalAddressRange) {
-                detectVerticalDragGestures(
-                    onDragStart = {
-                        isDragging = true
-                        isPressing = true
-                        isVisible = true
-                    },
-                    onDragEnd = {
-                        isDragging = false
-                        isPressing = false
-                        dragThumbRatio = null
-                        onDragComplete(lastDragAddress)
-                        if (!alwaysShow) {
-                            coroutineScope.launch {
-                                delay(hideDelayMs)
-                                if (!isDragging) {
-                                    isVisible = false
-                                }
-                            }
-                        }
-                    },
-                    onDragCancel = {
-                        isDragging = false
-                        isPressing = false
-                        dragThumbRatio = null
-                        if (!alwaysShow) {
-                            coroutineScope.launch {
-                                delay(hideDelayMs)
-                                if (!isDragging) {
-                                    isVisible = false
-                                }
-                            }
-                        }
-                    },
-                    onVerticalDrag = { change, _ ->
-                        val height = size.height
-                        val newY = (change.position.y / height).coerceIn(0f, 1f)
-                        // Update thumb position immediately to follow finger
-                        dragThumbRatio = newY
-                        val targetAddr = viewStartAddress + (newY * totalAddressRange).toLong()
-                        lastDragAddress = targetAddr
-                        onScrollToAddress(targetAddr)
+            .graphicsLayer { this.alpha = alpha.value }
+            .then(strip)
+            .pointerInput(viewStartAddress, viewEndAddress, thumbHeight) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    val height = size.height.toFloat()
+                    val thumbPx = thumbHeight.toPx().coerceAtMost(height)
+                    val thumbTop = (dragThumbRatio ?: addressRatio()) * (height - thumbPx)
+                    val grabOffset = if (down.position.y in thumbTop..(thumbTop + thumbPx)) {
+                        down.position.y - thumbTop
+                    } else thumbPx / 2f
+                    var lastAddress: Long
+                    fun moveTo(y: Float): Long {
+                        val ratio = scrollbarRatioAtPosition(y, height, thumbPx, grabOffset)
+                        dragThumbRatio = ratio
+                        reportCenter?.invoke(thumbPx / 2f + ratio * (height - thumbPx))
+                        val target = scrollbarAddressAtRatio(viewStartAddress, viewEndAddress, ratio)
+                        preview(target)
+                        return target
                     }
-                )
-            }
-            .pointerInput(totalAddressRange) {
-                detectTapGestures(
-                    onTap = { offset ->
-                        isPressing = true
-                        isVisible = true
-                        val height = size.height
-                        val newY = (offset.y / height).coerceIn(0f, 1f)
-                        val targetAddr = viewStartAddress + (newY * totalAddressRange).toLong()
-                        onScrollToAddress(targetAddr)
-                        onDragComplete(targetAddr)
-                        coroutineScope.launch {
-                            kotlinx.coroutines.delay(100)
-                            isPressing = false
+                    isDragging = true
+                    isVisible = true
+                    dragStateChange(true)
+                    try {
+                        lastAddress = moveTo(down.position.y)
+                        val released = verticalDrag(down.id) { change ->
+                            change.consume()
+                            lastAddress = moveTo(change.position.y)
                         }
-                        if (!alwaysShow) {
-                            coroutineScope.launch {
-                                delay(hideDelayMs)
-                                if (!isDragging) {
-                                    isVisible = false
-                                }
-                            }
-                        }
+                        if (released) commit(lastAddress) else dragThumbRatio = null
+                    } finally {
+                        isDragging = false
+                        dragStateChange(false)
                     }
-                )
+                }
             }
     ) {
-        // Scrollbar thumb - positioned at the right edge
-        Box(
-            Modifier
-                .align(BiasAlignment(1f, bias))
-                .size(thumbWidth, thumbHeight)
-                .background(currentThumbColor)
+        val height = thumbHeight.toPx().coerceAtMost(size.height)
+        val width = thumbWidth.toPx().coerceAtMost(size.width)
+        val ratio = dragThumbRatio ?: addressRatio()
+        // The contrasting wings stay visible at either side of the permission strip.
+        drawRect(
+            color = thumbColor,
+            topLeft = Offset(size.width - width, ratio * (size.height - height)),
+            size = Size(width, height),
+            alpha = if (isDragging || seeking) 0.52f else 0.44f
         )
     }
 }

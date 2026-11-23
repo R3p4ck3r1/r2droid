@@ -2,6 +2,7 @@ package top.wsdx233.r2droid.activity
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
@@ -150,6 +151,10 @@ class TerminalActivity : ComponentActivity() {
         override fun logStackTrace(tag: String?, e: Exception?) {}
     }
 
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(SettingsManager.withAppLanguage(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SettingsManager.initialize(applicationContext)
@@ -166,6 +171,12 @@ class TerminalActivity : ComponentActivity() {
         }
         bindLayout()
         attachSessionToTerminalView()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        terminalSession?.finishIfRunning()
+        terminalSession = null
     }
 
     private fun resolveTerminalMode(): String? {

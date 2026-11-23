@@ -2,12 +2,12 @@ package top.wsdx233.r2droid.util
 
 import android.content.Context
 import android.util.Log
-import org.radare.r2pipe.LaunchSpec
-import org.radare.r2pipe.ProcessKiller
-import org.radare.r2pipe.R2Pipe
-import org.radare.r2pipe.R2PipeHttp
-import org.radare.r2pipe.R2PipeLogLevel
-import org.radare.r2pipe.R2PipeLogger
+import org.radare.r2pipe.kotlin.LaunchSpec
+import org.radare.r2pipe.kotlin.ProcessKiller
+import org.radare.r2pipe.kotlin.R2Pipe
+import org.radare.r2pipe.kotlin.R2PipeHttp
+import org.radare.r2pipe.kotlin.R2PipeLogLevel
+import org.radare.r2pipe.kotlin.R2PipeLogger
 
 internal object AndroidR2PipeSupport {
     val processKiller: ProcessKiller = object : ProcessKiller {
@@ -52,14 +52,13 @@ internal object AndroidR2PipeSupport {
         filePath: String? = null,
         flags: String = "",
         rawArgs: String? = null,
-        logTag: String = "R2Pipe",
-        suppressKnownR2FridaWarnings: Boolean = false
+        logger: R2PipeLogger
     ): R2Pipe {
         return R2Pipe.open(
             launchSpec = toCoreLaunchSpec(
                 R2Runtime.buildStdioLaunch(context.applicationContext, filePath, flags, rawArgs)
             ),
-            logger = logger(logTag, suppressKnownR2FridaWarnings),
+            logger = logger,
             processKiller = processKiller
         )
     }
@@ -70,15 +69,14 @@ internal object AndroidR2PipeSupport {
         flags: String = "",
         rawArgs: String? = null,
         port: Int,
-        logTag: String = "R2PipeHttp",
-        suppressKnownR2FridaWarnings: Boolean = false
+        logger: R2PipeLogger
     ): R2PipeHttp {
         return R2PipeHttp.spawn(
             launchSpec = toCoreLaunchSpec(
                 R2Runtime.buildHttpLaunch(context.applicationContext, filePath, flags, rawArgs, port)
             ),
             port = port,
-            logger = logger(logTag, suppressKnownR2FridaWarnings),
+            logger = logger,
             processKiller = processKiller
         )
     }

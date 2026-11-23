@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
@@ -50,19 +51,7 @@ class MainActivity : ComponentActivity() {
     private val pendingFileUri = mutableStateOf<Uri?>(null)
 
     override fun attachBaseContext(newBase: Context) {
-        // Apply language from settings
-        val prefs = newBase.getSharedPreferences("r2droid_settings", MODE_PRIVATE)
-        val language = prefs.getString("language", "system")
-
-        val context = if (language != null && language != "system") {
-            val locale = java.util.Locale(language)
-            val config = android.content.res.Configuration(newBase.resources.configuration)
-            config.setLocale(locale)
-            newBase.createConfigurationContext(config)
-        } else {
-            newBase
-        }
-        super.attachBaseContext(context)
+        super.attachBaseContext(SettingsManager.withAppLanguage(newBase))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,6 +138,7 @@ enum class AppScreen {
     Settings,
     Features,
     R2Frida,
+    R2Flutter,
     PluginManager,
     ProotSetup
 }
@@ -210,7 +200,7 @@ fun MainAppNavigation(
     onPendingFileUriConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    var currentScreen by remember {
+    var currentScreen by rememberSaveable {
         mutableStateOf(
             when {
                 R2PipeManager.isConnected -> AppScreen.Project
@@ -219,7 +209,7 @@ fun MainAppNavigation(
             }
         )
     }
-    var showTutorialPrompt by remember { mutableStateOf(false) }
+    var showTutorialPrompt by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(currentScreen, pendingFileUri) {
         if (
@@ -279,15 +269,14 @@ fun MainAppNavigation(
         if (mode != "auto") {
             R2PipeManager.pendingFilePath = null
             R2PipeManager.pendingCustomCommand = null
-            R2PipeManager.pendingRestoreFlags = null
-            R2PipeManager.pendingProjectId = null
+            R2PipeManager.pendingProjectRestore = null
             R2PipeManager.pendingAutoSaveProject = null
             return AppScreen.Home
         }
         return if (
             R2PipeManager.pendingFilePath != null ||
             R2PipeManager.pendingCustomCommand != null ||
-            R2PipeManager.pendingRestoreFlags != null
+            R2PipeManager.pendingProjectRestore != null
         ) {
             AppScreen.Project
         } else {
@@ -300,7 +289,7 @@ fun MainAppNavigation(
             val filePath = IntentFileResolver.resolve(context, pendingFileUri)
             if (filePath != null) {
                 R2PipeManager.pendingFilePath = filePath
-                R2PipeManager.pendingRestoreFlags = null
+                R2PipeManager.pendingProjectRestore = null
                 R2PipeManager.pendingAutoSaveProject = null
                 currentScreen = if (AppVariant.shouldGuideProotInstall(context)) {
                     Toast.makeText(context, context.getString(top.wsdx233.r2droid.R.string.proot_setup_required_message), Toast.LENGTH_SHORT).show()
@@ -361,12 +350,13 @@ fun MainAppNavigation(
             top.wsdx233.r2droid.screen.home.FeaturesScreen(
                 onBackClick = { currentScreen = AppScreen.Home },
                 onNavigateToR2Frida = { currentScreen = AppScreen.R2Frida },
+                onNavigateToR2Flutter = { currentScreen = AppScreen.R2Flutter },
                 onNavigateToPlugins = { currentScreen = AppScreen.PluginManager },
                 onCustomStart = { command ->
                     val rawArgs = command.trim().removePrefix("r2 ").removePrefix("r2").trim()
                     R2PipeManager.pendingCustomCommand = rawArgs.ifBlank { "-" }
                     R2PipeManager.pendingFilePath = null
-                    R2PipeManager.pendingRestoreFlags = null
+                    R2PipeManager.pendingProjectRestore = null
                     R2PipeManager.pendingAutoSaveProject = null
                     if (AppVariant.shouldGuideProotInstall(context)) {
                         Toast.makeText(context, context.getString(top.wsdx233.r2droid.R.string.proot_setup_required_message), Toast.LENGTH_SHORT).show()
@@ -374,6 +364,22 @@ fun MainAppNavigation(
                     } else {
                         currentScreen = AppScreen.Project
                     }
+                }
+            )
+        }
+        AppScreen.R2Flutter -> {
+            BackHandler {
+                currentScreen = AppScreen.Features
+            }
+            top.wsdx233.r2droid.feature.r2flutter.R2FlutterScreen(
+                onBack = { currentScreen = AppScreen.Features },
+                onOpenTarget = { path ->
+                    R2PipeManager.pendingFilePath = path
+                    R2PipeManager.pendingCustomCommand = null
+                    R2PipeManager.pendingProjectRestore = null
+                    R2PipeManager.pendingAutoSaveProject = null
+                    R2PipeManager.pendingOpenR2Flutter = true
+                    currentScreen = AppScreen.Project
                 }
             )
         }
@@ -386,7 +392,7 @@ fun MainAppNavigation(
                 onConnect = { command ->
                     R2PipeManager.pendingCustomCommand = command
                     R2PipeManager.pendingFilePath = null
-                    R2PipeManager.pendingRestoreFlags = null
+                    R2PipeManager.pendingProjectRestore = null
                     R2PipeManager.pendingAutoSaveProject = null
                     if (AppVariant.shouldGuideProotInstall(context)) {
                         Toast.makeText(context, context.getString(top.wsdx233.r2droid.R.string.proot_setup_required_message), Toast.LENGTH_SHORT).show()
